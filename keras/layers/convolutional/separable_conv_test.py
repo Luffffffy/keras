@@ -14,14 +14,12 @@
 # ==============================================================================
 """Tests for separable convolutional layers."""
 
-import tensorflow.compat.v2 as tf
-
 from absl.testing import parameterized
-import numpy as np
-
 import keras
 from keras import keras_parameterized
 from keras import testing_utils
+import numpy as np
+import tensorflow.compat.v2 as tf
 
 
 @keras_parameterized.run_all_keras_modes
@@ -162,3 +160,6 @@ class SeparableConv2DTest(keras_parameterized.TestCase):
       self.assertEqual(layer.depthwise_kernel.constraint, d_constraint)
       self.assertEqual(layer.pointwise_kernel.constraint, p_constraint)
       self.assertEqual(layer.bias.constraint, b_constraint)
+
+if __name__ == '__main__':
+  tf.test.main()

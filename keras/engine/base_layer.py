@@ -2197,7 +2197,7 @@ class Layer(tf.Module, version_utils.LayerVersionSelector):
       return self._inbound_nodes[0].input_shapes
     else:
       raise AttributeError('The layer "' + str(self.name) +
-                           ' has multiple inbound nodes, '
+                           '" has multiple inbound nodes, '
                            'with different input shapes. Hence '
                            'the notion of "input shape" is '
                            'ill-defined for the layer. '
@@ -3132,8 +3132,7 @@ class Layer(tf.Module, version_utils.LayerVersionSelector):
       flat_specs = [tf_utils.get_tensor_spec(x) for x in flat_kwarg]
       if any(s is None for s in flat_specs):
         continue
-      kwargs[key] = args_spec.append(
-          tf.nest.pack_sequence_as(kwarg, flat_specs))
+      kwargs_spec[key] = tf.nest.pack_sequence_as(kwarg, flat_specs)
 
     self._saved_model_inputs_spec = inputs_spec
     self._saved_model_arg_spec = ([inputs_spec] + args_spec, kwargs_spec)
@@ -3160,13 +3159,17 @@ class Layer(tf.Module, version_utils.LayerVersionSelector):
     """Info about this layer to be saved into the SavedModel."""
     return self._trackable_saved_model_saver.tracking_metadata
 
-  def _list_extra_dependencies_for_serialization(self, serialization_cache):
-    return (self._trackable_saved_model_saver
-            .list_extra_dependencies_for_serialization(serialization_cache))
-
-  def _list_functions_for_serialization(self, serialization_cache):
-    return (self._trackable_saved_model_saver
-            .list_functions_for_serialization(serialization_cache))
+  def _trackable_children(self, save_type='checkpoint', **kwargs):
+    if save_type == 'savedmodel':
+      cache = kwargs['cache']
+      # TODO(b/213628533): This must be called before super() to ensure
+      # that any input shape changes are applied before getting the config of
+      # the model.
+      children = self._trackable_saved_model_saver.trackable_children(cache)
+    else:
+      children = {}
+    children.update(super()._trackable_children(save_type, **kwargs))
+    return children
 
   @property
   def _use_input_spec_as_call_signature(self):

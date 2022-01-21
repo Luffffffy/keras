@@ -14,15 +14,13 @@
 # ==============================================================================
 """Training-related part of the Keras engine."""
 
-import tensorflow.compat.v2 as tf
-
 import copy
 import itertools
 import json
 import os
 import warnings
 import weakref
-from tensorflow.python.eager import context
+
 from keras import backend
 from keras import callbacks as callbacks_module
 from keras import optimizer_v1
@@ -36,24 +34,25 @@ from keras.mixed_precision import loss_scale_optimizer as lso
 from keras.mixed_precision import policy
 from keras.optimizer_experimental import optimizer as optimizer_experimental
 from keras.saving import hdf5_format
+from keras.saving import pickle_utils
 from keras.saving import save
 from keras.saving import saving_utils
-from keras.saving import pickle_utils
 from keras.saving.saved_model import json_utils
 from keras.saving.saved_model import model_serialization
 from keras.utils import generic_utils
+from keras.utils import io_utils
 from keras.utils import layer_utils
 from keras.utils import object_identity
 from keras.utils import tf_utils
 from keras.utils import traceback_utils
 from keras.utils import version_utils
-from keras.utils.io_utils import ask_to_proceed_with_overwrite
-from keras.utils.io_utils import path_to_string
 from keras.utils.mode_keys import ModeKeys
+import tensorflow.compat.v2 as tf
+
+from tensorflow.python.eager import context
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util.tf_export import keras_export
 from tensorflow.tools.docs import doc_controls
-
 
 # pylint: disable=g-import-not-at-top
 try:
@@ -1304,15 +1303,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     self._check_call_args('fit')
     _disallow_inside_tf_function('fit')
 
-    if verbose == 'auto':
-      if self.distribute_strategy._should_use_with_coordinator:  # pylint: disable=protected-access
-        verbose = 2  # Default to epoch-level logging for PSStrategy.
-      else:
-        verbose = 1  # Default to batch-level logging otherwise.
-    elif verbose == 1 and self.distribute_strategy._should_use_with_coordinator:  # pylint: disable=protected-access
-      raise ValueError(
-          '`verbose=1` is not allowed with `ParameterServerStrategy` for '
-          f'performance reasons. Received: `verbose`={verbose}')
+    verbose = _get_verbosity(verbose, self.distribute_strategy)
 
     if validation_split:
       # Create the validation data using the training data. Only supported for
@@ -1576,7 +1567,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                x=None,
                y=None,
                batch_size=None,
-               verbose=1,
+               verbose='auto',
                sample_weight=None,
                steps=None,
                callbacks=None,
@@ -1616,7 +1607,13 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           specify the `batch_size` if your data is in the form of a dataset,
           generators, or `keras.utils.Sequence` instances (since they generate
           batches).
-        verbose: 0 or 1. Verbosity mode. 0 = silent, 1 = progress bar.
+        verbose: `"auto"`, 0, 1, or 2. Verbosity mode.
+            0 = silent, 1 = progress bar, 2 = single line.
+            `"auto"` defaults to 1 for most cases, and to 2 when used with
+            `ParameterServerStrategy`. Note that the progress bar is not
+            particularly useful when logged to a file, so `verbose=2` is
+            recommended when not running interactively (e.g. in a production
+            environment).
         sample_weight: Optional Numpy array of weights for the test samples,
           used for weighting the loss function. You can either pass a flat (1D)
           Numpy array with the same length as the input samples
@@ -1666,6 +1663,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     version_utils.disallow_legacy_graph('Model', 'evaluate')
     self._assert_compile_was_called()
     self._check_call_args('evaluate')
+    self._check_sample_weight_warning(x, sample_weight)
     _disallow_inside_tf_function('evaluate')
     use_cached_eval_dataset = kwargs.pop('_use_cached_eval_dataset', False)
     if kwargs:
@@ -1675,6 +1673,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       self._cluster_coordinator = tf.distribute.experimental.coordinator.ClusterCoordinator(
           self.distribute_strategy)
 
+    verbose = _get_verbosity(verbose, self.distribute_strategy)
     with self.distribute_strategy.scope():
       # Use cached evaluation data only when it's called in `Model.fit`
       if (use_cached_eval_dataset
@@ -1830,7 +1829,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   def predict(self,
               x,
               batch_size=None,
-              verbose=0,
+              verbose='auto',
               steps=None,
               callbacks=None,
               max_queue_size=10,
@@ -1877,7 +1876,13 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
             Do not specify the `batch_size` if your data is in the
             form of dataset, generators, or `keras.utils.Sequence` instances
             (since they generate batches).
-        verbose: Verbosity mode, 0 or 1.
+        verbose: `"auto"`, 0, 1, or 2. Verbosity mode.
+            0 = silent, 1 = progress bar, 2 = single line.
+            `"auto"` defaults to 1 for most cases, and to 2 when used with
+            `ParameterServerStrategy`. Note that the progress bar is not
+            particularly useful when logged to a file, so `verbose=2` is
+            recommended when not running interactively (e.g. in a production
+            environment).
         steps: Total number of steps (batches of samples)
             before declaring the prediction round finished.
             Ignored with the default value of `None`. If x is a `tf.data`
@@ -1934,6 +1939,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     if self._cluster_coordinator:
       self._cluster_coordinator = None
 
+    verbose = _get_verbosity(verbose, self.distribute_strategy)
     outputs = None
     with self.distribute_strategy.scope():
       # Creates a `tf.data.Dataset` and handles batch and epoch iteration.
@@ -2454,7 +2460,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
             format.
     """
     self._assert_weights_created()
-    filepath = path_to_string(filepath)
+    filepath = io_utils.path_to_string(filepath)
     filepath_is_h5 = saving_utils.is_hdf5_filepath(filepath)
     if save_format is None:
       if filepath_is_h5:
@@ -2487,7 +2493,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       check_filepath = filepath
     # If file exists and should not be overwritten:
     if not overwrite and os.path.isfile(check_filepath):
-      proceed = ask_to_proceed_with_overwrite(check_filepath)
+      proceed = io_utils.ask_to_proceed_with_overwrite(check_filepath)
       if not proceed:
         return
     if save_format == 'h5':
@@ -3064,6 +3070,23 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                          'training/testing. '
                          'Use `model.compile(optimizer, loss)`.')
 
+  def _check_sample_weight_warning(self, x, sample_weight):
+    # Datasets can include sample weight, by returning a tuple with the
+    # structure of `(x, y, sample_weight)`.
+    sample_weight_present = sample_weight is not None or (
+        isinstance(x, tf.data.Dataset) and isinstance(x.element_spec, tuple) and
+        len(x.element_spec) == 3)
+
+    # pylint: disable=protected-access
+    if (sample_weight_present and
+        self.compiled_metrics._user_weighted_metrics is None):
+      logging.warning(
+          '`evaluate()` received a value for `sample_weight`, but '
+          '`weighted_metrics` were not provided.  Did you mean to pass metrics '
+          'to `weighted_metrics` in `compile()`?  If this is intentional '
+          'you can pass `weighted_metrics=[]` to `compile()` in order to '
+          'silence this warning.')
+
   def _set_inputs(self, inputs, outputs=None, training=None):
     """This method is for compat with Modelv1. Only inputs are needed here."""
     self._set_save_spec(inputs)
@@ -3072,23 +3095,27 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   def _trackable_saved_model_saver(self):
     return model_serialization.ModelSavedModelSaver(self)
 
-  def _list_functions_for_serialization(self, serialization_cache):
-    # SavedModel needs to ignore the execution functions.
-    train_function = self.train_function
-    test_function = self.test_function
-    predict_function = self.predict_function
-    train_tf_function = self.train_tf_function
-    self.train_function = None
-    self.test_function = None
-    self.predict_function = None
-    self.train_tf_function = None
-    functions = super(
-        Model, self)._list_functions_for_serialization(serialization_cache)
-    self.train_function = train_function
-    self.test_function = test_function
-    self.predict_function = predict_function
-    self.train_tf_function = train_tf_function
-    return functions
+  def _trackable_children(self, save_type='checkpoint', **kwargs):
+    if save_type == 'savedmodel':
+      # SavedModel needs to ignore the execution functions.
+      train_function = self.train_function
+      test_function = self.test_function
+      predict_function = self.predict_function
+      train_tf_function = self.train_tf_function
+      self.train_function = None
+      self.test_function = None
+      self.predict_function = None
+      self.train_tf_function = None
+
+    children = super(Model, self)._trackable_children(save_type, **kwargs)
+
+    if save_type == 'savedmodel':
+      self.train_function = train_function
+      self.test_function = test_function
+      self.predict_function = predict_function
+      self.train_tf_function = train_tf_function
+
+    return children
 
   def _should_eval(self, epoch, validation_freq):
     epoch = epoch + 1  # one-index the user-facing epoch.
@@ -3188,6 +3215,22 @@ def concat(tensors, axis=0):
   return tf.concat(tensors, axis=axis)
 
 
+def _get_verbosity(verbose, distribute_strategy):
+  """Find the right verbosity value for 'auto'."""
+  if verbose == 1 and distribute_strategy._should_use_with_coordinator:  # pylint: disable=protected-access
+    raise ValueError(
+        '`verbose=1` is not allowed with `ParameterServerStrategy` for '
+        f'performance reasons. Received: verbose={verbose}')
+  if verbose == 'auto':
+    if (distribute_strategy._should_use_with_coordinator or  # pylint: disable=protected-access
+        not io_utils.is_interactive_logging_enabled()):
+      # Default to epoch-level logging for PSStrategy or using absl logging.
+      return 2
+    else:
+      return 1  # Default to batch-level logging otherwise.
+  return verbose
+
+
 def _is_tpu_multi_host(strategy):
   return (backend.is_tpu_strategy(strategy) and
           strategy.extended.num_hosts > 1)
@@ -3273,7 +3316,7 @@ def _disallow_inside_tf_function(method_name):
 def _detect_save_format(filepath):
   """Returns path to weights file and save format."""
 
-  filepath = path_to_string(filepath)
+  filepath = io_utils.path_to_string(filepath)
   if saving_utils.is_hdf5_filepath(filepath):
     return filepath, 'h5'
 

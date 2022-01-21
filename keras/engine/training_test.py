@@ -35,6 +35,7 @@ from keras.engine import sequential
 from keras.engine import training as training_module
 from keras.engine import training_utils_v1
 from keras.utils import data_utils
+from keras.utils import io_utils
 from keras.utils import np_utils
 import numpy as np
 import tensorflow.compat.v2 as tf
@@ -200,6 +201,60 @@ class TrainingTest(keras_parameterized.TestCase):
     self.assertAllClose(history.history['loss'][0], 0.0)
     # The validation loss should be 1.0.
     self.assertAllClose(history.history['val_loss'][0], 1.0)
+
+  @keras_parameterized.run_all_keras_modes(
+      always_skip_v1=True)
+  def test_warn_on_evaluate(self):
+    i = layers_module.Input((1,))
+    x = np.ones((100, 1))
+    y = np.ones((100, 1))
+    sample_weight = np.ones((100,))
+    model = training_module.Model(i, i)
+    model.compile(loss='mse', metrics=['mse'])
+
+    logging.set_verbosity(2)
+    with self.assertLogs(level=2) as logs:
+      model.evaluate(x, y, sample_weight=sample_weight)
+    self.assertTrue(
+        any('`evaluate()` received a value for `sample_weight`' in log
+            for log in logs.output))
+
+  @keras_parameterized.run_all_keras_modes(
+      always_skip_v1=True)
+  def test_sample_weight_warning_disable(self):
+    i = layers_module.Input((1,))
+    x = np.ones((100, 1))
+    y = np.ones((100, 1))
+    sample_weight = np.ones((100,))
+    model = training_module.Model(i, i)
+    model.compile(loss='mse', metrics=['mse'], weighted_metrics=[])
+
+    logging.set_verbosity(2)
+    with self.assertLogs(level=2) as logs:
+      model.evaluate(x, y, sample_weight=sample_weight)
+    self.assertFalse(
+        any('`evaluate()` received a value for `sample_weight`' in log
+            for log in logs.output))
+
+  @keras_parameterized.run_all_keras_modes(
+      always_skip_v1=True)
+  def test_warn_on_evaluate_with_tf_dataset(self):
+    i = layers_module.Input((1,))
+
+    x = tf.ones((100, 1), tf.float32)
+    y = tf.ones((100, 1), tf.float32)
+    sample_weight = tf.ones((100,), dtype=tf.float32)
+    val_dataset = tf.data.Dataset.from_tensor_slices(
+        (x, y, sample_weight)).batch(10)
+    model = training_module.Model(i, i)
+    model.compile(loss='mse', metrics=['mse'])
+
+    logging.set_verbosity(2)
+    with self.assertLogs(level=2) as logs:
+      model.evaluate(val_dataset)
+    self.assertTrue(
+        any('`evaluate()` received a value for `sample_weight`' in log
+            for log in logs.output))
 
   @keras_parameterized.run_all_keras_modes
   def test_fit_and_validate_training_arg(self):
@@ -1059,6 +1114,7 @@ class TrainingTest(keras_parameterized.TestCase):
         RMSPropOptimizer(learning_rate=0.001),
         loss='binary_crossentropy',
         run_eagerly=testing_utils.should_run_eagerly())
+    io_utils.enable_interactive_logging()
     with tf.compat.v1.test.mock.patch.object(sys, 'stdout', mock_stdout):
       model.fit(
           np.ones((10, 10), 'float32'), np.ones((10, 1), 'float32'), epochs=10)
@@ -1853,6 +1909,59 @@ class TrainingTest(keras_parameterized.TestCase):
     history = model.fit(dataset, epochs=2, steps_per_epoch=10)
     self.assertLen(history.history['loss'], 2)
     self.assertAllClose(initial_value, model.trainable_variables[0])
+
+  @keras_parameterized.run_all_keras_modes(always_skip_v1=True)
+  def test_get_verbosity(self):
+    class MyStrategy(tf.distribute.Strategy):
+
+      def __init__(self):
+        self._should_use_with_coordinator = True
+    with self.assertRaisesRegex(ValueError, '`verbose=1` is not allowed'):
+      training_module._get_verbosity(1, MyStrategy())
+
+    io_utils.enable_interactive_logging()
+    self.assertEqual(training_module._get_verbosity('auto', MyStrategy()), 2)
+    self.assertEqual(training_module._get_verbosity(
+        'auto', tf.distribute.MirroredStrategy()), 1)
+    self.assertEqual(training_module._get_verbosity(
+        2, tf.distribute.MirroredStrategy()), 2)
+
+    io_utils.disable_interactive_logging()
+    self.assertEqual(training_module._get_verbosity(
+        'auto', tf.distribute.MirroredStrategy()), 2)
+
+  @keras_parameterized.run_all_keras_modes(always_skip_v1=True)
+  def test_save_spec(self):
+
+    class Model(training_module.Model):
+
+      def call(self, arg_input_1, arg_input_2, keyword_input, training=None):
+        return 0
+
+    # Test subclassed model save specs.
+    model = Model()
+    model(tf.ones([1, 1]), tf.ones([2, 2]), keyword_input=tf.ones([3, 3]),
+          training=False)
+    spec = model.save_spec(dynamic_batch=False)
+    self.assertEqual(spec[0][0].shape.as_list(), [1, 1])
+    self.assertEqual(spec[0][1].shape.as_list(), [2, 2])
+    self.assertEqual(spec[1]['keyword_input'].shape.as_list(), [3, 3])
+    spec = model.save_spec(dynamic_batch=True)
+    self.assertEqual(spec[0][0].shape.as_list(), [None, 1])
+
+    # Test functional model save specs.
+    input_1 = layers_module.Input((1,), batch_size=1)
+    input_2 = layers_module.Input((2,), batch_size=2)
+    input_3 = layers_module.Input((3,), batch_size=3)
+    output = model(input_1, input_2, keyword_input=input_3, training=True)
+    functional = training_module.Model([input_1, input_2, input_3], output)
+    # Functional models should ignore dynamic_batch if the input layers have a
+    # known batch size.
+    spec = functional.save_spec(dynamic_batch=True)
+    input_specs = spec[0][0]
+    self.assertEqual(input_specs[0].shape.as_list(), [1, 1])
+    self.assertEqual(input_specs[1].shape.as_list(), [2, 2])
+    self.assertEqual(input_specs[2].shape.as_list(), [3, 3])
 
 
 class TestExceptionsAndWarnings(keras_parameterized.TestCase):

@@ -27,6 +27,7 @@ from keras.optimizer_v2 import utils as optimizer_utils
 import tensorflow.compat.v2 as tf
 # pylint: disable=g-direct-tensorflow-import
 from tensorflow.python.util.tf_export import keras_export
+from tensorflow.tools.docs import doc_controls
 
 
 class _BaseOptimizer(tf.Module):
@@ -39,7 +40,7 @@ class _BaseOptimizer(tf.Module):
                global_clipnorm=None,
                use_ema=False,
                ema_momentum=0.99,
-               ema_overwrite_frequency=100,
+               ema_overwrite_frequency=None,
                jit_compile=False,
                **kwargs):
     self._name = name
@@ -112,6 +113,32 @@ class _BaseOptimizer(tf.Module):
     """
     raise NotImplementedError
 
+  @tf.function(jit_compile=True)
+  def _update_step_xla(self, gradient, variable, key):
+    """A wrapper of `update_step` to enable XLA acceleration.
+
+    Due to `tf.function` tracing mechanism, for (gradient, variable) pairs of
+    the same shape and dtype, the execution graph always invoke the first
+    pair it has seen. Thus, we need a `key` argument to make each
+    (gradient, variable) pair unique. In additions, XLA cannot understand
+    string input, so the key is an integer.
+
+    Args:
+      gradient: backpropagated gradient of the given variable.
+      variable: variable whose value needs to be updated.
+      key (int): a unique key that identifies the variable.
+
+    Returns:
+      An `Operation` that applies the specified gradients.
+    """
+    return self.update_step(gradient, variable)
+
+  def _update_step(self, gradient, variable):
+    if self._jit_compile:
+      self._update_step_xla(gradient, variable, id(self._var_key(variable)))
+    else:
+      self.update_step(gradient, variable)
+
   def compute_gradients(self, loss, var_list, tape=None):
     """Compute gradients of loss on trainable variables.
 
@@ -167,6 +194,11 @@ class _BaseOptimizer(tf.Module):
     return grads
 
   @property
+  def use_ema(self):
+    """Returns whether the optimizer uses EMA of weights."""
+    return self._use_ema
+
+  @property
   def iterations(self):
     """The number of training steps this `optimizer` has run.
 
@@ -209,6 +241,20 @@ class _BaseOptimizer(tf.Module):
                       " learning rate to be settable, you should instantiate "
                       "the optimizer with a float `learning_rate` argument.")
     self._learning_rate.assign(learning_rate)
+
+  @property
+  @doc_controls.do_not_generate_docs
+  def lr(self):
+    """Alias of `learning_rate()`.
+
+    `lr()` is heavily called in workflows using `optimizer_v2.OptimizerV2`,
+    so we keep it for backward compabitliy.
+    """
+    return self.learning_rate
+
+  @lr.setter
+  def lr(self, learning_rate):
+    self.learning_rate = learning_rate
 
   def _build_learning_rate(self, learning_rate):
     if isinstance(learning_rate, learning_rate_schedule.LearningRateSchedule):
@@ -376,11 +422,9 @@ class _BaseOptimizer(tf.Module):
     Args:
       grads_and_vars: List of (gradient, variable) pairs.
     """
-    update_step = self.update_step
-    if self._jit_compile:
-      update_step = tf.function(update_step, jit_compile=True)
     for grad, var in grads_and_vars:
-      update_step(grad, var)
+      self._update_step(grad, var)
+
     self.iterations.assign_add(1)
 
   def _update_model_variables_moving_average(self, var_list):
@@ -499,12 +543,15 @@ class Optimizer(_BaseOptimizer):
       the momentum to use when computing the EMA of the model's weights:
         `new_average = ema_momentum * old_average + (1 - ema_momentum) *
         current_variable_value`.
-    ema_overwrite_frequency: int or None, default to 100. Only used if
-      `use_ema=True`. Every ema_overwrite_frequency steps of iterations, we
-      overwrite the model variable by its stored moving average. If None, we
-      do not overwrite model variables in the middle of training, and users
-      need to explicitly overwrite the model variable by calling
-      `finalize_variable_values()`.
+    ema_overwrite_frequency: int or None, default to None. Only used if
+      `use_ema=True`. Every `ema_overwrite_frequency` steps of iterations, we
+      overwrite the model variable by its moving average. If None, the optimizer
+       does not overwrite model variables in the middle of training, and you
+      need to explicitly overwrite the variables at the end of training
+      by calling `optimizer.finalize_variable_values()` (which updates the model
+      variables in-place). When using the built-in `fit()` training loop, this
+      happens automatically after the last epoch, and you don't need to do
+      anything.
     jit_compile: bool, default to False. If True, the optimizer will use XLA
       acceleration. `jit_compile` can only be False when using Parameter
       Server Strategy.
@@ -657,6 +704,20 @@ class Optimizer(_BaseOptimizer):
         skip_aggregate_gradients=True)
   ```
 
+  ### Creating a custom optimizer
+
+  If you intend to create your own optimization algorithm, please inherit from
+  this class and override the following methods:
+
+    - `build`: Create your optimizer-related variables, such as `momentums` in
+      SGD optimizer.
+    - `update_step`: Implement your optimizer's updating logic.
+    - `get_config`: serialization of the optimizer, include all hyper
+      parameters.
+
+  Your optimizer would automatically be compatible with tensorflow distributed
+  training if you subclass `optimizer_experimental.Optimizer`.
+
   """
 
   def __init__(self,
@@ -666,7 +727,7 @@ class Optimizer(_BaseOptimizer):
                global_clipnorm=None,
                use_ema=False,
                ema_momentum=0.99,
-               ema_overwrite_frequency=100,
+               ema_overwrite_frequency=None,
                jit_compile=False,
                **kwargs):
     """Create a new Optimizer."""
@@ -780,10 +841,7 @@ class Optimizer(_BaseOptimizer):
     """`apply_gradients` using a `DistributionStrategy`."""
 
     def apply_grad_to_update_var(var, grad):
-      update_step = self.update_step
-      if self._jit_compile:
-        update_step = tf.function(update_step, jit_compile=True)
-      return update_step(grad, var)
+      return self._update_step(grad, var)
 
     for grad, var in grads_and_vars:
       distribution.extended.update(
