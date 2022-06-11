@@ -30,6 +30,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -44,6 +45,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -73,8 +75,8 @@ tf_py_test(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:testing_utils",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -90,6 +92,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -119,8 +122,9 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
-        "//keras/layers/legacy_rnn:rnn_cell_impl",
+        "//keras/layers/rnn:legacy_cells",
         "//keras/legacy_tf_layers:layers_base",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -146,6 +150,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -155,6 +160,7 @@ py_library(
     srcs_version = "PY3",
     deps = [
         "//keras",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -173,8 +179,8 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -194,6 +200,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -202,9 +209,7 @@ cuda_py_test(
     size = "medium",
     srcs = ["memory_test.py"],
     tags = [
-        "manual",
         "no_oss",
-        "notap",  #TODO(b/140640597): this test is flaky at the moment
         "optonly",  # The test is too slow in non-opt mode
     ],
     # TODO(b/140065350): Re-enable
@@ -213,6 +218,7 @@ cuda_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//third_party/tensorflow/python/eager/memory_tests:memory_test_util",
     ],
 )
 
@@ -247,10 +253,10 @@ tf_py_test(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:metrics",
         "//keras/api:keras_api",
         "//keras/layers/core",
-        "//keras/optimizer_v2",
+        "//keras/metrics",
+        "//keras/optimizers/optimizer_v2",
     ],
 )
 
@@ -275,10 +281,10 @@ tf_py_test(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
         "//keras/api:keras_api",
         "//keras/engine",
         "//keras/layers/core",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -292,6 +298,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -307,11 +314,11 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
         "//keras/api:keras_api",
         "//keras/engine",
         "//keras/layers/core",
         "//keras/layers/normalization",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -324,11 +331,11 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
         "//keras/api:keras_api",
         "//keras/engine",
         "//keras/layers/core",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_v2",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -342,10 +349,10 @@ tf_py_test(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
         "//keras/api:keras_api",
         "//keras/engine",
         "//keras/layers/core",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -354,4 +361,20 @@ py_library(
     srcs = ["get_config_samples.py"],
     srcs_version = "PY3",
     deps = [],
+)
+
+py_test(
+    name = "keras_doctest",
+    srcs = ["keras_doctest.py"],
+    python_version = "PY3",
+    tags = [
+        "no_pip",
+        "noasan",
+        "nomsan",
+        "notsan",
+    ],
+    deps = [
+        "//:expect_tensorflow_installed",
+        "//keras/testing_infra:keras_doctest_lib",
+    ],
 )

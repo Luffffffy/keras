@@ -181,6 +181,10 @@ tf_module {
     mtype: "<type \'type\'>"
   }
   member {
+    name: "EinsumDense"
+    mtype: "<type \'type\'>"
+  }
+  member {
     name: "Embedding"
     mtype: "<type \'type\'>"
   }
@@ -358,6 +362,10 @@ tf_module {
   }
   member {
     name: "RNN"
+    mtype: "<type \'type\'>"
+  }
+  member {
+    name: "RandomBrightness"
     mtype: "<type \'type\'>"
   }
   member {

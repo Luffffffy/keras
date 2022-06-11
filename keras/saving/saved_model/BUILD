@@ -22,6 +22,7 @@ load("@org_keras//keras:keras.bzl", "tf_py_test")
 
 package(
     default_visibility = [
+        "//keras/layers/rnn:__pkg__",
         "//keras/saving:__subpackages__",
     ],
     licenses = ["notice"],
@@ -35,7 +36,7 @@ py_library(
 py_library(
     name = "load_context",
     srcs = ["load_context.py"],
-    visibility = ["//third_party/tensorflow/python/distribute:__pkg__"],
+    visibility = ["//visibility:private"],
 )
 
 py_library(
@@ -77,6 +78,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -90,6 +92,8 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -110,7 +114,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -123,10 +127,9 @@ py_binary(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras:regularizers",
-        "//keras:testing_utils",
+        "//keras/testing_infra:test_utils",
         "//third_party/py/absl:app",
         "//third_party/py/absl/flags",
-        "//third_party/py/absl/logging",
     ],
 )
 

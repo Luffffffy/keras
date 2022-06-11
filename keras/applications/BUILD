@@ -15,6 +15,7 @@ py_library(
     name = "applications",
     srcs = [
         "__init__.py",
+        "convnext.py",
         "densenet.py",
         "efficientnet.py",
         "efficientnet_v2.py",
@@ -27,6 +28,7 @@ py_library(
         "nasnet.py",
         "regnet.py",
         "resnet.py",
+        "resnet_rs.py",
         "resnet_v2.py",
         "vgg16.py",
         "vgg19.py",
@@ -39,9 +41,9 @@ py_library(
         "//:expect_tensorflow_installed",
         "//keras:activations",
         "//keras:backend",
-        "//keras:models",
         "//keras/engine",
         "//keras/layers",
+        "//keras/models",
         "//keras/utils:data_utils",
         "//keras/utils:layer_utils",
     ],
@@ -55,11 +57,13 @@ tf_py_test(
     tags = [
         "no_rocm",
         "notsan",  # b/168814536
+        "requires-net:external",
     ],
     deps = [
         ":applications",
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -76,6 +80,7 @@ tf_py_test(
         "no_oss",
         "no_pip",
         "notsan",  # b/168814536
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -94,6 +99,7 @@ tf_py_test(
         "no_oss",
         "no_pip",
         "notsan",  # TODO(b/170901700)
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -111,6 +117,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -128,6 +135,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -145,6 +153,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -162,6 +171,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -179,6 +189,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -196,6 +207,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -213,6 +225,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -230,6 +243,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -243,6 +257,25 @@ tf_py_test(
     name = "applications_load_weight_test_mobilenet_v3_large",
     srcs = ["applications_load_weight_test.py"],
     args = ["--module=mobilenet_v3_large"],
+    main = "applications_load_weight_test.py",
+    tags = [
+        "no_oss",
+        "no_pip",
+        "requires-net:external",
+    ],
+    deps = [
+        ":applications",
+        "//:expect_absl_installed",
+        "//:expect_tensorflow_installed",
+        "//keras/preprocessing",
+    ],
+)
+
+tf_py_test(
+    name = "applications_load_weight_test_convnext",
+    size = "large",
+    srcs = ["applications_load_weight_test.py"],
+    args = ["--module=convnext"],
     main = "applications_load_weight_test.py",
     tags = [
         "no_oss",
@@ -339,6 +372,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -356,6 +390,7 @@ tf_py_test(
     tags = [
         "no_oss",
         "no_pip",
+        "requires-net:external",
     ],
     deps = [
         ":applications",
@@ -375,5 +410,6 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )

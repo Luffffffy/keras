@@ -92,7 +92,8 @@ py_library(
         "//keras/engine",
         "//keras/engine:input_spec",
         "//keras/preprocessing:image",
-        "//keras/utils:control_flow_util",
+        "//keras/utils:image_utils",
+        "//keras/utils:tf_utils",
     ],
 )
 
@@ -231,6 +232,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:generic_utils",
     ],
 )
@@ -245,6 +247,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:generic_utils",
     ],
 )
@@ -272,6 +275,7 @@ distribute_py_test(
         "//keras",
         "//keras:backend",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -296,6 +300,7 @@ distribute_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -311,6 +316,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -332,6 +338,7 @@ distribute_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -345,8 +352,9 @@ cuda_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:testing_utils",
         "//keras/engine",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -366,6 +374,7 @@ distribute_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -379,8 +388,9 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:testing_utils",
         "//keras/engine",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -396,6 +406,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:generic_utils",
     ],
 )
@@ -417,6 +428,7 @@ distribute_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -434,8 +446,9 @@ cuda_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:testing_utils",
         "//keras/engine",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:generic_utils",
     ],
 )
@@ -454,6 +467,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -468,6 +482,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:generic_utils",
     ],
 )
@@ -477,7 +492,7 @@ distribute_py_test(
     srcs = ["normalization_distribution_test.py"],
     main = "normalization_distribution_test.py",
     python_version = "PY3",
-    shard_count = 4,
+    shard_count = 8,
     tags = [
         "no_oss",
         "nomultivm",  # TODO(b/170502145)
@@ -488,6 +503,7 @@ distribute_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -502,6 +518,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:generic_utils",
     ],
 )
@@ -526,6 +543,7 @@ distribute_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/distribute:strategy_combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -542,6 +560,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:generic_utils",
     ],
 )
@@ -557,5 +576,6 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )

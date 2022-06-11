@@ -35,5 +35,16 @@ http_archive(
     strip_prefix = "protobuf-3.9.2",
     urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.9.2.tar.gz"],
 )
+
+# ZLIB. Need by com_google_protobuf.
+http_archive(
+    name = "zlib",
+    build_file = "@com_google_protobuf//:third_party/zlib.BUILD",
+    sha256 = "91844808532e5ce316b3c010929493c0244f3d37593afd6de04f71821d5136d9",
+    strip_prefix = "zlib-1.2.12",
+    urls = ["https://zlib.net/zlib-1.2.12.tar.gz"],
+)
+
+
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
 protobuf_deps()

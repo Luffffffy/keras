@@ -154,12 +154,15 @@ distribute_py_test(
         "multi_and_single_gpu",
         "no_oss",  # TODO(b/194935930): Flaky test
         "nomultivm",  # TODO(b/170502145)
+        "notap",  # b/216629693
     ],
     deps = [
         "//:expect_absl_installed",
+        "//:expect_numpy_installed",
         "//:expect_portpicker_installed",
         "//:expect_tensorflow_installed",
         "//keras/api:keras_api",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -288,5 +291,16 @@ distribute_py_test(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras/api:keras_api",
+    ],
+)
+
+tf_py_test(
+    name = "custom_object_saving_test",
+    srcs = ["custom_object_saving_test.py"],
+    python_version = "PY3",
+    deps = [
+        "//:expect_tensorflow_installed",
+        "//keras/api:keras_api",
+        "//keras/testing_infra:test_combinations",
     ],
 )

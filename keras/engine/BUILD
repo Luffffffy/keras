@@ -55,16 +55,18 @@ py_library(
         "//keras:callbacks_v1",
         "//keras:constraints",
         "//keras:losses",
-        "//keras:metrics",
-        "//keras:optimizers",
         "//keras:regularizers",
         "//keras/distribute",
         "//keras/distribute:distribute_coordinator_utils",
+        "//keras/dtensor:layout_map",
         "//keras/initializers",
+        "//keras/metrics",
         "//keras/mixed_precision:autocast_variable",
         "//keras/mixed_precision:loss_scale_optimizer",
         "//keras/mixed_precision:policy",
+        "//keras/optimizers",
         "//keras/saving",
+        "//keras/saving/experimental",
         "//keras/utils:engine_utils",
         "//keras/utils:metrics_utils",
         "//keras/utils:mode_keys",
@@ -80,6 +82,7 @@ py_library(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras:backend",
+        "//keras/dtensor",
         "//keras/utils:tf_inspect",
         "//keras/utils:tf_utils",
     ],
@@ -100,9 +103,10 @@ py_library(
         "//keras:backend",
         "//keras:constraints",
         "//keras/initializers",
-        # TODO(keras-team): Fix the cyclar deps between layer and metrics.
-        # "//keras:metrics",
+        # TODO(keras-team): Fix the circular deps between layer and metrics.
+        # "//keras/metrics",
         "//keras:regularizers",
+        "//keras/dtensor:lazy_variable",
         "//keras/mixed_precision:autocast_variable",
         "//keras/mixed_precision:loss_scale_optimizer",
         "//keras/mixed_precision:policy",
@@ -213,7 +217,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras:backend",
-        "//keras:combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -233,6 +237,7 @@ tf_py_test(
         "//:expect_pandas_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -249,6 +254,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -262,8 +268,9 @@ tf_py_test(
         ":input_layer",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:models",
         "//keras/layers",
+        "//keras/models",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -282,9 +289,9 @@ cuda_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras:backend",
-        "//keras:combinations",
-        "//keras:testing_utils",
         "//keras/layers/convolutional",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -303,6 +310,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -318,6 +326,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -333,6 +342,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -369,11 +379,12 @@ tf_py_test(
         "//keras",
         "//keras:backend",
         "//keras:callbacks",
-        "//keras:combinations",
         "//keras:losses",
-        "//keras:metrics",
-        "//keras:testing_utils",
         "//keras/layers",
+        "//keras/metrics",
+        "//keras/mixed_precision:policy",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:data_utils",
         "//keras/utils:np_utils",
     ],
@@ -391,6 +402,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -408,6 +420,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -425,6 +438,7 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras/layers",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -445,12 +459,12 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
         "//keras:losses",
-        "//keras:metrics",
-        "//keras:testing_utils",
         "//keras/layers",
-        "//keras/optimizer_v2",
+        "//keras/metrics",
+        "//keras/optimizers/optimizer_v2",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:data_utils",
     ],
 )
@@ -469,6 +483,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -486,6 +501,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -503,6 +519,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -520,6 +537,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -536,8 +554,8 @@ tf_py_test(
         ":base_layer",
         ":engine",
         "//keras",
-        "//keras:combinations",
-        "//keras:testing_utils",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:layer_utils",
     ],
 )
@@ -560,11 +578,11 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras:backend",
-        "//keras:combinations",
-        "//keras:models",
-        "//keras:testing_utils",
         "//keras/initializers",
         "//keras/layers",
+        "//keras/models",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:layer_utils",
         "//keras/utils:tf_utils",
     ],
@@ -583,7 +601,8 @@ tf_py_test(
         ":base_layer",
         ":engine",
         "//keras",
-        "//keras:testing_utils",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:layer_utils",
     ],
 )
@@ -605,13 +624,13 @@ tf_py_test(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras:backend",
-        "//keras:combinations",
         "//keras:regularizers",
-        "//keras:testing_utils",
         "//keras/layers",
         "//keras/legacy_tf_layers:core",
         "//keras/mixed_precision:policy",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_v2",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:tf_utils",
     ],
 )
@@ -630,6 +649,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -646,6 +666,7 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -662,5 +683,6 @@ tf_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )

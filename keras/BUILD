@@ -34,13 +34,11 @@ py_library(
     name = "keras",
     srcs = [
         "__init__.py",
-        "keras_parameterized.py",
     ],
     srcs_version = "PY3",
     deps = [
         ":backend",
         ":engine",
-        ":testing_utils",  # TODO(scottzhu): Stop exporting the test_utils after removing all the callers.
         "//:expect_h5py_installed",
         "//:expect_numpy_installed",
         "//:expect_pydot_installed",
@@ -50,16 +48,21 @@ py_library(
         "//keras/applications",
         "//keras/datasets",
         "//keras/distribute",
+        "//keras/dtensor:optimizers",
         "//keras/estimator",
         "//keras/feature_column",
         "//keras/layers",
-        "//keras/layers/legacy_rnn:rnn_cell_impl",
+        "//keras/layers/rnn:legacy_cell_wrappers",
+        "//keras/layers/rnn:legacy_cells",
         "//keras/legacy_tf_layers:layers",
         "//keras/mixed_precision:mixed_precision_experimental",
-        "//keras/optimizer_v2",
-        "//keras/premade",
+        "//keras/models",
+        "//keras/optimizers",
+        "//keras/premade_models",
         "//keras/preprocessing",
         "//keras/saving",
+        "//keras/testing_infra:keras_doctest_lib",
+        "//keras/testing_infra:test_utils",  # For keras.__internal__ API
         "//keras/utils",
         "//keras/wrappers",
     ],
@@ -95,8 +98,8 @@ py_library(
 py_library(
     name = "engine",
     srcs = [
-        ":metrics",
-        ":models",
+        "//keras/metrics",
+        "//keras/models",
     ],
     srcs_version = "PY3",
     deps = [
@@ -112,7 +115,7 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":backend",
-        "//keras/layers:advanced_activations",
+        "//keras/layers/activation",
         "//keras/utils:engine_utils",
     ],
 )
@@ -142,18 +145,6 @@ py_library(
         "//keras/protobuf:projector_config_proto_py_pb2",
         "//keras/utils:engine_utils",
         "//keras/utils:mode_keys",
-    ],
-)
-
-py_library(
-    name = "combinations",
-    srcs = [
-        "combinations.py",
-    ],
-    srcs_version = "PY3",
-    deps = [
-        ":testing_utils",
-        "//:expect_tensorflow_installed",
     ],
 )
 
@@ -191,62 +182,11 @@ py_library(
     srcs_version = "PY3",
     deps = [
         ":backend",
-        "//keras/utils:engine_utils",
-    ],
-)
-
-py_library(
-    name = "metrics",
-    srcs = [
-        "metrics.py",
-    ],
-    srcs_version = "PY3",
-    deps = [
-        ":activations",
-        ":backend",
-        ":losses",
-        "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
-        "//keras/distribute",
-        "//keras/engine:base_layer",
-        "//keras/engine:base_layer_utils",
+        "//keras/saving/experimental",
+        "//keras/utils:engine_utils",
         "//keras/utils:generic_utils",
-        "//keras/utils:metrics_utils",
         "//keras/utils:tf_utils",
-    ],
-)
-
-py_library(
-    name = "models",
-    srcs = [
-        "models.py",
-    ],
-    srcs_version = "PY3",
-    deps = [
-        ":backend",
-        ":metrics",
-        ":optimizers",
-        "//:expect_tensorflow_installed",
-        "//keras/engine",
-        "//keras/engine:base_layer",
-        "//keras/saving",
-        "//keras/utils:generic_utils",
-        "//keras/utils:version_utils",
-    ],
-)
-
-py_library(
-    name = "optimizers",
-    srcs = [
-        "optimizer_v1.py",
-        "optimizers.py",
-    ],
-    srcs_version = "PY3",
-    deps = [
-        ":backend",
-        "//keras/optimizer_experimental:optimizer",
-        "//keras/optimizer_v2",
-        "//keras/utils:engine_utils",
     ],
 )
 
@@ -273,23 +213,6 @@ py_library(
 # )
 # copybara:uncomment_end
 
-py_library(
-    name = "testing_utils",
-    srcs = [
-        "testing_utils.py",
-    ],
-    srcs_version = "PY3",
-    deps = [
-        ":backend",
-        ":models",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
-        "//keras/engine:base_layer_utils",
-        "//keras/layers",
-        "//keras/optimizer_v2",
-    ],
-)
-
 tf_py_test(
     name = "activations_test",
     size = "small",
@@ -298,27 +221,14 @@ tf_py_test(
     deps = [
         ":activations",
         ":backend",
-        ":combinations",
         "//:expect_absl_installed",
         "//:expect_numpy_installed",
         "//:expect_scipy_installed",
         "//:expect_tensorflow_installed",
         "//keras/layers",
-        "//keras/layers:advanced_activations",
+        "//keras/layers/activation",
         "//keras/layers/core",
-    ],
-)
-
-tf_py_test(
-    name = "combinations_test",
-    size = "small",
-    srcs = ["combinations_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":combinations",
-        ":testing_utils",
-        "//:expect_absl_installed",
-        "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -329,10 +239,10 @@ tf_py_test(
     python_version = "PY3",
     deps = [
         ":backend",
-        ":combinations",
         ":constraints",
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -345,21 +255,7 @@ tf_py_test(
         ":keras",
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
-    ],
-)
-
-tf_py_test(
-    name = "optimizers_test",
-    size = "medium",
-    srcs = ["optimizers_test.py"],
-    python_version = "PY3",
-    shard_count = 8,
-    tags = ["notsan"],
-    deps = [
-        ":keras",
-        "//:expect_absl_installed",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -373,74 +269,11 @@ tf_py_test(
     ],
     deps = [
         ":backend",
-        ":combinations",
         ":losses",
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
         "//keras/utils:engine_utils",
-    ],
-)
-
-tf_py_test(
-    name = "metrics_functional_test",
-    size = "small",
-    srcs = ["metrics_functional_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":combinations",
-        ":keras",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
-    ],
-)
-
-tf_py_test(
-    name = "metrics_test",
-    size = "medium",
-    srcs = ["metrics_test.py"],
-    python_version = "PY3",
-    shard_count = 4,
-    deps = [
-        ":combinations",
-        ":keras",
-        ":metrics",
-        ":testing_utils",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
-        "//keras/layers",
-    ],
-)
-
-tf_py_test(
-    name = "metrics_confusion_matrix_test",
-    size = "medium",
-    srcs = ["metrics_confusion_matrix_test.py"],
-    python_version = "PY3",
-    shard_count = 4,
-    deps = [
-        ":combinations",
-        ":metrics",
-        ":models",
-        "//:expect_absl_installed",
-        "//:expect_numpy_installed",
-        "//:expect_scipy_installed",
-        "//:expect_tensorflow_installed",
-        "//keras/layers",
-        "//keras/utils:metrics_utils",
-    ],
-)
-
-tf_py_test(
-    name = "metrics_correctness_test",
-    size = "medium",
-    srcs = ["metrics_correctness_test.py"],
-    python_version = "PY3",
-    shard_count = 4,
-    deps = [
-        ":keras",
-        "//:expect_absl_installed",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
     ],
 )
 
@@ -459,6 +292,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -467,35 +301,21 @@ tf_py_test(
     size = "medium",
     srcs = ["callbacks_v1_test.py"],
     python_version = "PY3",
-    tags = ["notsan"],
+    tags = [
+        "nomac",  # Using profiler causes segfault in MacOS runs.
+        "notsan",
+    ],
     deps = [
         ":callbacks",
         ":callbacks_v1",
-        ":combinations",
-        ":testing_utils",
         "//:expect_absl_installed",
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras/engine",
         "//keras/layers",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:np_utils",
-    ],
-)
-
-tf_py_test(
-    name = "models_test",
-    size = "medium",
-    srcs = ["models_test.py"],
-    python_version = "PY3",
-    shard_count = 8,
-    tags = [
-        "notsan",  # b/67509773
-    ],
-    deps = [
-        ":keras",
-        "//:expect_absl_installed",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
     ],
 )
 
@@ -507,12 +327,12 @@ tf_py_test(
     shard_count = 4,
     deps = [
         ":backend",
-        ":combinations",
         ":engine",
         "//:expect_absl_installed",
         "//:expect_numpy_installed",
         "//:expect_scipy_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -524,22 +344,8 @@ tf_py_test(
     deps = [
         ":backend",
         ":backend_config",
-        ":combinations",
         "//:expect_tensorflow_installed",
-    ],
-)
-
-tf_py_test(
-    name = "keras_parameterized_test",
-    size = "small",
-    srcs = ["keras_parameterized_test.py"],
-    python_version = "PY3",
-    tags = ["notsan"],
-    deps = [
-        ":keras",
-        "//:expect_absl_installed",
-        "//:expect_numpy_installed",
-        "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 

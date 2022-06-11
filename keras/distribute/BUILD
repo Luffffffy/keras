@@ -33,10 +33,10 @@ py_library(
         "//keras:callbacks_v1",
         "//keras:constraints",
         "//keras:losses",
-        "//keras:optimizers",
         "//keras:regularizers",
         "//keras/initializers",
         "//keras/mixed_precision:policy",
+        "//keras/optimizers",
         "//keras/utils:engine_utils",
         "//keras/utils:mode_keys",
     ],
@@ -63,8 +63,8 @@ py_library(
     srcs_version = "PY3",
     deps = [
         "//:expect_tensorflow_installed",
-        "//keras/optimizer_experimental:optimizer",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_experimental:optimizer",
+        "//keras/optimizers/optimizer_v2",
     ],
 )
 
@@ -117,6 +117,7 @@ py_library(
         ":model_combinations",
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -143,7 +144,7 @@ distribute_py_test(
     ],
     deps = [
         "//:expect_tensorflow_installed",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_v2",
     ],
 )
 
@@ -162,11 +163,11 @@ cuda_py_test(
         "//:expect_absl_installed",
         "//:expect_portpicker_installed",
         "//:expect_tensorflow_installed",
-        "//keras:testing_utils",
         "//keras/engine",
         "//keras/layers",
         "//keras/mixed_precision:policy",
         "//keras/mixed_precision:test_util",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -186,6 +187,7 @@ distribute_py_test(
         "//:expect_portpicker_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -203,7 +205,7 @@ distribute_py_test(
         "//:expect_absl_installed",
         "//:expect_portpicker_installed",
         "//:expect_tensorflow_installed",
-        "//keras:metrics",
+        "//keras/metrics",
     ],
 )
 
@@ -243,7 +245,7 @@ distribute_py_test(
         ":strategy_combinations",
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_v2",
     ],
 )
 
@@ -261,6 +263,7 @@ py_library(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -347,6 +350,7 @@ py_library(
         "//:expect_tensorflow_installed",
         "//keras",
         "//keras:backend",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -436,7 +440,7 @@ distribute_py_test(
     deps = [
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
-        "//keras:metrics",
+        "//keras/metrics",
     ],
 )
 
@@ -614,8 +618,8 @@ cuda_py_test(
     ],
     deps = [
         "//:expect_tensorflow_installed",
-        "//keras:metrics",
         "//keras/layers/core",
+        "//keras/metrics",
     ],
 )
 
@@ -637,8 +641,8 @@ cuda_py_test(
         "//keras:backend",
         "//keras:callbacks",
         "//keras:engine",
-        "//keras:optimizers",
-        "//keras/optimizer_v2",
+        "//keras/optimizers",
+        "//keras/optimizers/optimizer_v2",
         "//keras/utils:kpl_test_utils",
     ],
 )
@@ -668,7 +672,7 @@ py_library(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_v2",
     ],
 )
 
@@ -731,6 +735,8 @@ distribute_py_test(
     ],
     deps = [
         ":multi_worker_testing_utils",
+        ":strategy_combinations",
+        "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras/engine:base_layer",
     ],
@@ -752,6 +758,7 @@ distribute_py_test(
     deps = [
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_utils",
         "//keras/utils:dataset_creator",
     ],
 )
@@ -778,6 +785,7 @@ distribute_py_test(
         "//:expect_portpicker_installed",
         "//:expect_tensorflow_installed",
         "//keras:callbacks",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -801,6 +809,7 @@ distribute_py_test(
         ":strategy_combinations",
         "//:expect_tensorflow_installed",
         "//keras:callbacks",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -846,6 +855,7 @@ tf_py_test(
         "//:expect_absl_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -892,7 +902,7 @@ py_library(
         "//keras/engine",
         "//keras/layers/core",
         "//keras/layers/preprocessing:string_lookup",
-        "//keras/optimizer_v2",
+        "//keras/optimizers/optimizer_v2",
         "//keras/utils:dataset_creator",
     ],
 )

@@ -14,26 +14,27 @@
 # ==============================================================================
 """Tests for repeat vector layer."""
 
-import keras
-from keras import keras_parameterized
-from keras import testing_utils
 import numpy as np
-
 import tensorflow.compat.v2 as tf
 
+import keras
+from keras.testing_infra import test_combinations
+from keras.testing_infra import test_utils
 
-@keras_parameterized.run_all_keras_modes
-class RepeatVectorTest(keras_parameterized.TestCase):
 
-  def test_repeat_vector(self):
-    testing_utils.layer_test(
-        keras.layers.RepeatVector, kwargs={'n': 3}, input_shape=(3, 2))
+@test_combinations.run_all_keras_modes
+class RepeatVectorTest(test_combinations.TestCase):
+    def test_repeat_vector(self):
+        test_utils.layer_test(
+            keras.layers.RepeatVector, kwargs={"n": 3}, input_shape=(3, 2)
+        )
 
-  def test_numpy_inputs(self):
-    if tf.executing_eagerly():
-      layer = keras.layers.RepeatVector(2)
-      x = np.ones((10, 10))
-      self.assertAllEqual(np.ones((10, 2, 10)), layer(x))
+    def test_numpy_inputs(self):
+        if tf.executing_eagerly():
+            layer = keras.layers.RepeatVector(2)
+            x = np.ones((10, 10))
+            self.assertAllEqual(np.ones((10, 2, 10)), layer(x))
 
-if __name__ == '__main__':
-  tf.test.main()
+
+if __name__ == "__main__":
+    tf.test.main()

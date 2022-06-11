@@ -41,6 +41,10 @@ tf_module {
     argspec: "args=[\'x\', \'data_format\', \'scale\', \'dtype\'], varargs=None, keywords=None, defaults=[\'None\', \'True\', \'None\'], "
   }
   member_method {
+    name: "audio_dataset_from_directory"
+    argspec: "args=[\'directory\', \'labels\', \'label_mode\', \'class_names\', \'batch_size\', \'sampling_rate\', \'output_sequence_length\', \'ragged\', \'shuffle\', \'seed\', \'validation_split\', \'subset\', \'follow_links\'], varargs=None, keywords=None, defaults=[\'inferred\', \'int\', \'None\', \'32\', \'None\', \'None\', \'False\', \'True\', \'None\', \'None\', \'None\', \'False\'], "
+  }
+  member_method {
     name: "deserialize_keras_object"
     argspec: "args=[\'identifier\', \'module_objects\', \'custom_objects\', \'printable_module_name\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'object\'], "
   }
@@ -86,7 +90,7 @@ tf_module {
   }
   member_method {
     name: "load_img"
-    argspec: "args=[\'path\', \'grayscale\', \'color_mode\', \'target_size\', \'interpolation\'], varargs=None, keywords=None, defaults=[\'False\', \'rgb\', \'None\', \'nearest\'], "
+    argspec: "args=[\'path\', \'grayscale\', \'color_mode\', \'target_size\', \'interpolation\', \'keep_aspect_ratio\'], varargs=None, keywords=None, defaults=[\'False\', \'rgb\', \'None\', \'nearest\', \'False\'], "
   }
   member_method {
     name: "model_to_dot"
@@ -99,6 +103,10 @@ tf_module {
   member_method {
     name: "pack_x_y_sample_weight"
     argspec: "args=[\'x\', \'y\', \'sample_weight\'], varargs=None, keywords=None, defaults=[\'None\', \'None\'], "
+  }
+  member_method {
+    name: "pad_sequences"
+    argspec: "args=[\'sequences\', \'maxlen\', \'dtype\', \'padding\', \'truncating\', \'value\'], varargs=None, keywords=None, defaults=[\'None\', \'int32\', \'pre\', \'pre\', \'0.0\'], "
   }
   member_method {
     name: "plot_model"
@@ -119,6 +127,10 @@ tf_module {
   member_method {
     name: "set_random_seed"
     argspec: "args=[\'seed\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "split_dataset"
+    argspec: "args=[\'dataset\', \'left_size\', \'right_size\', \'shuffle\', \'seed\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'False\', \'None\'], "
   }
   member_method {
     name: "text_dataset_from_directory"

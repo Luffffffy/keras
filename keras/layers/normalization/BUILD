@@ -39,6 +39,7 @@ py_library(
         "//keras:backend",
         "//keras:constraints",
         "//keras:regularizers",
+        "//keras/dtensor:utils",
         "//keras/engine:base_layer",
         "//keras/engine:input_spec",
         "//keras/initializers",
@@ -64,6 +65,7 @@ py_library(
         "//:expect_tensorflow_installed",
         "//keras:constraints",
         "//keras:regularizers",
+        "//keras/dtensor:utils",
         "//keras/engine:base_layer",
         "//keras/initializers",
     ],
@@ -94,9 +96,9 @@ cuda_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
-        "//keras:testing_utils",
         "//keras/layers",
+        "//keras/testing_infra:test_combinations",
+        "//keras/testing_infra:test_utils",
     ],
 )
 
@@ -114,7 +116,7 @@ cuda_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
-        "//keras:combinations",
+        "//keras/testing_infra:test_combinations",
     ],
 )
 
@@ -128,5 +130,6 @@ cuda_py_test(
         "//:expect_numpy_installed",
         "//:expect_tensorflow_installed",
         "//keras",
+        "//keras/testing_infra:test_combinations",
     ],
 )
