@@ -64,7 +64,7 @@ class InputLayer(base_layer.Layer):
     model = tf.keras.Sequential([
       tf.keras.layers.InputLayer(input_shape=(4,)),
       tf.keras.layers.Dense(8)])
-    model.compile(tf.optimizers.RMSprop(0.001), loss='mse')
+    model.compile(tf.keras.optimizers.RMSprop(0.001), loss='mse')
     model.fit(np.zeros((10, 4)),
               np.ones((10, 8)))
 
@@ -72,7 +72,7 @@ class InputLayer(base_layer.Layer):
     # Keras will add a input for the model behind the scene.
     model = tf.keras.Sequential([
       tf.keras.layers.Dense(8, input_shape=(4,))])
-    model.compile(tf.optimizers.RMSprop(0.001), loss='mse')
+    model.compile(tf.keras.optimizers.RMSprop(0.001), loss='mse')
     model.fit(np.zeros((10, 4)),
               np.ones((10, 8)))
     ```
@@ -331,7 +331,7 @@ def Input(
             ragged. Only one of 'ragged' and 'sparse' can be True. In this case,
             values of 'None' in the 'shape' argument represent ragged
             dimensions.  For more information about RaggedTensors, see
-            [this guide](https://www.tensorflow.org/guide/ragged_tensors).
+            [this guide](https://www.tensorflow.org/guide/ragged_tensor).
         type_spec: A `tf.TypeSpec` object to create the input placeholder from.
             When provided, all other args except name must be None.
         **kwargs: deprecated arguments support. Supports `batch_shape` and

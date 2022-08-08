@@ -143,9 +143,11 @@ def set_callback_parameters(
         mode: String. One of ModeKeys.TRAIN, ModeKeys.TEST, or ModeKeys.PREDICT.
           Which loop mode to configure callbacks for.
     """
-    metric_names = model.metrics_names
+    metric_names = None
     for cbk in callback_list:
         if isinstance(cbk, (BaseLogger, ProgbarLogger)):
+            if not metric_names:
+                metric_names = model.metrics_names
             cbk.stateful_metrics = metric_names[1:]  # Exclude `loss`
 
     # Set callback parameters
@@ -153,6 +155,8 @@ def set_callback_parameters(
     # When we have deferred build scenario with iterator input, we will compile
     # when we standardize first batch of data.
     if mode != ModeKeys.PREDICT:
+        if not metric_names:
+            metric_names = model.metrics_names
         callback_metrics = copy.copy(metric_names)
         if do_validation:
             callback_metrics += ["val_" + n for n in metric_names]
@@ -605,6 +609,13 @@ class CallbackList:
                     f"callbacks: {unsupported_callbacks}"
                 )
 
+    def make_logs(self, model, logs, outputs, mode, prefix=""):
+        """Computes logs for sending to `on_batch_end` methods."""
+        if not self.callbacks:
+            return logs
+
+        return make_logs(model, logs, outputs, mode, prefix=prefix)
+
 
 @keras_export("keras.callbacks.Callback")
 class Callback:
@@ -639,10 +650,10 @@ class Callback:
     2. You will need to manually call all the `on_*` methods at the appropriate
        locations in your loop. Like this:
 
-       ```
+    Example:
+    ```python
        callbacks =  tf.keras.callbacks.CallbackList([...])
        callbacks.append(...)
-
        callbacks.on_train_begin(...)
        for epoch in range(EPOCHS):
          callbacks.on_epoch_begin(epoch)
@@ -654,7 +665,7 @@ class Callback:
          callbacks.on_epoch_end(epoch, epoch_logs)
        final_logs=...
        callbacks.on_train_end(final_logs)
-       ```
+    ```
 
     Attributes:
         params: Dict. Training parameters
@@ -1009,7 +1020,7 @@ class ProgbarLogger(Callback):
         ValueError: In case of invalid `count_mode`.
     """
 
-    def __init__(self, count_mode="samples", stateful_metrics=None):
+    def __init__(self, count_mode: str = "samples", stateful_metrics=None):
         super().__init__()
         self._supports_tf_logs = True
         if count_mode == "samples":
@@ -1319,11 +1330,11 @@ class ModelCheckpoint(Callback):
     def __init__(
         self,
         filepath,
-        monitor="val_loss",
-        verbose=0,
-        save_best_only=False,
-        save_weights_only=False,
-        mode="auto",
+        monitor: str = "val_loss",
+        verbose: int = 0,
+        save_best_only: bool = False,
+        save_weights_only: bool = False,
+        mode: str = "auto",
         save_freq="epoch",
         options=None,
         initial_value_threshold=None,
@@ -1781,9 +1792,14 @@ class BackupAndRestore(Callback):
           the callback saves the checkpoint at the end of each epoch.
           When set to an integer, the callback saves the checkpoint every
           `save_freq` batches.
+        delete_checkpoint: Boolean, default to True. This `BackupAndRestore`
+          callback works by saving a checkpoint to back up the training state.
+          If `delete_checkpoint=True`, the checkpoint will be deleted after
+          training is finished. Use `False` if you'd like to keep the checkpoint
+          for future usage.
     """
 
-    def __init__(self, backup_dir, save_freq="epoch"):
+    def __init__(self, backup_dir, save_freq="epoch", delete_checkpoint=True):
         super().__init__()
         self.backup_dir = backup_dir
         self._supports_tf_logs = True
@@ -1794,7 +1810,8 @@ class BackupAndRestore(Callback):
             tf.distribute.TPUStrategy,
             tf.distribute.experimental.ParameterServerStrategy,
         )
-        self._save_freq = save_freq
+        self.save_freq = save_freq
+        self.delete_checkpoint = delete_checkpoint
         self._batches_count = 0
         self._current_epoch = 0
 
@@ -1831,28 +1848,28 @@ class BackupAndRestore(Callback):
                 "MirroredStrategy, MultiWorkerMirroredStrategy and TPUStrategy."
             )
         self.model._training_state = worker_training_state.WorkerTrainingState(
-            self.model, self.backup_dir, self._save_freq
+            self.model, self.backup_dir, self.save_freq
         )
         self._training_state = self.model._training_state
         self._training_state.restore()
 
     def on_train_batch_end(self, batch, logs=None):
-        if self._save_freq != "epoch":
+        if self.save_freq != "epoch":
             self._batches_count += 1
-            if self._batches_count >= self._save_freq:
+            if self._batches_count >= self.save_freq:
                 self._batches_count = 0
                 self._training_state.back_up(
                     epoch=self._current_epoch, batch=batch
                 )
 
     def _implements_train_batch_hooks(self):
-        return self._save_freq != "epoch"
+        return self.save_freq != "epoch"
 
     def on_train_end(self, logs=None):
-
-        # On exit of training, delete the training state backup file that was
-        # saved for the purpose of worker recovery.
-        self._training_state.delete_backup()
+        if self.delete_checkpoint:
+            # On exit of training, delete the training state backup file saved
+            # for the purpose of worker recovery unless the user opts out.
+            self._training_state.delete_backup()
         # Clean up the training state.
         del self._training_state
         del self.model._training_state
@@ -1862,7 +1879,7 @@ class BackupAndRestore(Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         # Back up the model and current epoch for possible future recovery.
-        if self._save_freq == "epoch":
+        if self.save_freq == "epoch":
             self._training_state.back_up(epoch=epoch)
 
 

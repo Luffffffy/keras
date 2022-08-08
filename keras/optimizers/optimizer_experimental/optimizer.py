@@ -32,7 +32,7 @@ from tensorflow.python.util.tf_export import keras_export
 from tensorflow.tools.docs import doc_controls
 
 
-class _BaseOptimizer(tf.Module):
+class _BaseOptimizer(tf.__internal__.tracking.AutoTrackable):
     """Optimizer base class, which only supports non-distribute use case."""
 
     def __init__(
@@ -47,7 +47,7 @@ class _BaseOptimizer(tf.Module):
         jit_compile=True,
         **kwargs,
     ):
-        self._name = name
+        self.name = name
         self.clipnorm = clipnorm
         self.global_clipnorm = global_clipnorm
         self.clipvalue = clipvalue
@@ -85,6 +85,7 @@ class _BaseOptimizer(tf.Module):
 
         self._create_iteration_variable()
         self._process_kwargs(kwargs)
+        self._variables = []
 
     def _create_iteration_variable(self):
         """Create the iterations counter variable."""
@@ -96,6 +97,7 @@ class _BaseOptimizer(tf.Module):
             )
 
     def _process_kwargs(self, kwargs):
+        kwargs.pop("is_legacy_optimizer", None)
         legacy_kwargs = {
             "lr",
             "decay",
@@ -121,6 +123,33 @@ class _BaseOptimizer(tf.Module):
         # TODO(b/199214315): replace _unique_id with ref() after fixing ref()
         # issues on AggregatingVariable.
         return variable._unique_id
+
+    def _deduplicate_sparse_grad(self, grads):
+        """Deduplicate sparse gradient.
+
+        For sparse gradients, i.e., gradient is of type `tf.IndexedSlices`,
+        it is possible that `gradient.indices` has duplicated indices.
+        This function adds up values for the duplicated indices, and returns
+        a `tf.IndexedSlices` with indices of unique values.
+        """
+        processed_grads = []
+        for grad in grads:
+            if isinstance(grad, tf.IndexedSlices):
+                values = grad.values
+                indices = grad.indices
+                unique_indices, new_index_positions = tf.unique(indices)
+                summed_values = tf.math.unsorted_segment_sum(
+                    values, new_index_positions, tf.shape(unique_indices)[0]
+                )
+                processed_grads.append(
+                    tf.IndexedSlices(
+                        summed_values, unique_indices, grad.dense_shape
+                    )
+                )
+            else:
+                processed_grads.append(grad)
+
+        return processed_grads
 
     @abc.abstractmethod
     def update_step(self, gradient, variable):
@@ -270,16 +299,21 @@ class _BaseOptimizer(tf.Module):
     @learning_rate.setter
     def learning_rate(self, learning_rate):
         if isinstance(
-            self._learning_rate, learning_rate_schedule.LearningRateSchedule
+            learning_rate, learning_rate_schedule.LearningRateSchedule
         ):
-            raise TypeError(
-                "This optimizer was created with a `LearningRateSchedule`"
-                " object as its `learning_rate` constructor argument, "
-                "hence its learning rate is not settable. If you need the"
-                " learning rate to be settable, you should instantiate "
-                "the optimizer with a float `learning_rate` argument."
-            )
-        self._learning_rate.assign(learning_rate)
+            self._learning_rate = learning_rate
+        else:
+            if isinstance(
+                self._learning_rate, learning_rate_schedule.LearningRateSchedule
+            ):
+                raise TypeError(
+                    "This optimizer was created with a `LearningRateSchedule`"
+                    " object as its `learning_rate` constructor argument, "
+                    "hence its learning rate is not settable. If you need the"
+                    " learning rate to be settable, you should instantiate "
+                    "the optimizer with a float `learning_rate` argument."
+                )
+            self._learning_rate.assign(learning_rate)
 
     @property
     @doc_controls.do_not_generate_docs
@@ -378,9 +412,11 @@ class _BaseOptimizer(tf.Module):
             dtype = backend.floatx()
         if shape is None:
             shape = []
-        return tf.Variable(
+        variable = tf.Variable(
             initial_value=initializer(shape, dtype), name=name, trainable=False
         )
+        self._variables.append(variable)
+        return variable
 
     def add_variable_from_reference(
         self, model_variable, variable_name, shape=None, initial_value=None
@@ -414,12 +450,14 @@ class _BaseOptimizer(tf.Module):
                 )
             else:
                 initial_value = tf.zeros(shape, dtype=model_variable.dtype)
-        return tf.Variable(
+        variable = tf.Variable(
             initial_value=initial_value,
             name=f"{variable_name}/{model_variable._shared_name}",
             dtype=model_variable.dtype,
             trainable=False,
         )
+        self._variables.append(variable)
+        return variable
 
     def minimize(self, loss, var_list, tape=None):
         """Minimize `loss` by updating `var_list`.
@@ -459,20 +497,37 @@ class _BaseOptimizer(tf.Module):
         ):
             # Compute the current learning rate at the beginning of variable
             # update.
-            self._current_learning_rate.assign(
-                self._learning_rate(self.iterations)
-            )
+            if hasattr(self, "_current_learning_rate"):
+                self._current_learning_rate.assign(
+                    self._learning_rate(self.iterations)
+                )
+            else:
+                self._current_learning_rate = tf.Variable(
+                    self._learning_rate(self.iterations),
+                    name="learning_rate",
+                    dtype=tf.float32,
+                    trainable=False,
+                )
         grads_and_vars = optimizer_utils.filter_empty_gradients(grads_and_vars)
+        if len(list(grads_and_vars)) == 0:
+            # It is possible that the grad is empty. In this case,
+            # `apply_gradients` is a no-op.
+            return
         grads, trainable_variables = zip(*grads_and_vars)
-        scope_name = self._name or "optimizer"
+        scope_name = self.name or "optimizer"
         with tf.name_scope(scope_name):
             with tf.init_scope():
                 # Lift variable creation to init scope to avoid environment
                 # issues.
                 self.build(trainable_variables)
         grads = self._clip_gradients(grads)
+        grads = self._deduplicate_sparse_grad(grads)
         grads_and_vars = list(zip(grads, trainable_variables))
         self._internal_apply_gradients(grads_and_vars)
+
+        for variable in trainable_variables:
+            if variable.constraint is not None:
+                variable.assign(variable.constraint(variable))
 
     def _internal_apply_gradients(self, grads_and_vars):
         """Helper function of apply gradients.
@@ -569,6 +624,7 @@ class _BaseOptimizer(tf.Module):
             "ema_momentum": self.ema_momentum,
             "ema_overwrite_frequency": self.ema_overwrite_frequency,
             "jit_compile": self.jit_compile,
+            "is_legacy_optimizer": False,
         }
         return config
 
@@ -591,6 +647,16 @@ class _BaseOptimizer(tf.Module):
                     config["learning_rate"]
                 )
         return cls(**config)
+
+    @doc_controls.do_not_generate_docs
+    def variables(self):
+        """Returns variables of this Optimizer.
+
+        We override the `variable` property method of `tf.Module` for the
+        sake of backward compatibility with `optimizer_v2.Optimizer`'s
+        `variable()` method.
+        """
+        return self._variables
 
 
 base_optimizer_keyword_args = """name: String. The name to use

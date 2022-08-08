@@ -24,7 +24,7 @@ from keras.testing_infra import test_utils
 
 
 class TestPickleProtocol(test_combinations.TestCase):
-    """Tests pickle protoocol support."""
+    """Tests pickle protocol support."""
 
     @test_combinations.run_with_all_model_types
     @test_combinations.parameterized.named_parameters(
@@ -86,6 +86,8 @@ class TestPickleProtocol(test_combinations.TestCase):
         model = serializer(original_model)
         # compile
         model.compile(optimizer="sgd", loss="sparse_categorical_crossentropy")
+        if hasattr(model.optimizer, "_distribution_strategy"):
+            model.optimizer._distribution_strategy = None
         # roundtrip compiled but not trained
         model = serializer(model)
 

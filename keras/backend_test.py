@@ -28,6 +28,7 @@ from keras.engine import input_layer
 from keras.layers import activation
 from keras.layers.normalization import batch_normalization_v1
 from keras.testing_infra import test_combinations
+from keras.utils import losses_utils
 from keras.utils import tf_inspect
 from keras.utils import tf_utils
 
@@ -1721,6 +1722,41 @@ class BackendNNOpsTest(tf.test.TestCase, parameterized.TestCase):
                 backend.eval(last_states[0]), expected_last_state
             )
 
+    def test_rnn_function_jit_compile_no_unroll_input_length_none(self):
+        num_samples = 3
+        num_timesteps = 4
+
+        def step_function(inputs, states):
+            return inputs, [s + 1 for s in states]
+
+        inputs_vals = np.random.random((num_samples, num_timesteps, 5))
+        initial_state_vals = np.random.random((num_samples, 6, 7))
+        mask_vals = np.ones((num_samples, num_timesteps))
+        mask_vals[0, -2:] = 0  # final two timesteps masked for first sample
+
+        expected_last_state = initial_state_vals.copy()
+        expected_last_state[0] += num_timesteps - 2
+        expected_last_state[1:] += num_timesteps
+
+        inputs = backend.variable(inputs_vals)
+        initial_states = [backend.variable(initial_state_vals)]
+        mask = backend.variable(mask_vals)
+
+        @tf.function(jit_compile=True)
+        def fn():
+            _, _, last_states = backend.rnn(
+                step_function,
+                inputs,
+                initial_states,
+                mask=mask,
+                unroll=False,
+                input_length=None,
+            )
+            return last_states
+
+        last_states = fn()
+        self.assertAllClose(backend.eval(last_states[0]), expected_last_state)
+
     def test_batch_normalization(self):
         g_val = np.random.random((3,))
         b_val = np.random.random((3,))
@@ -1968,6 +2004,88 @@ class BackendCrossEntropyLossesTest(tf.test.TestCase, parameterized.TestCase):
             ),
         )
         self.assertArrayNear(self.evaluate(result)[0], [0.002, 0, 0.17], 1e-3)
+
+    @test_combinations.generate(
+        test_combinations.combine(mode=["graph", "eager"])
+    )
+    def test_sparse_categorical_crossentropy_loss_with_ignore_class(self):
+        tests = (([255, 1, 2, 2], 255), ([-1, 1, 2, 2], -1))
+        p = backend.softmax(
+            backend.constant(
+                [
+                    [1.8, 1.2, 0.5],
+                    [0.2, 3.8, 0.8],
+                    [1.1, 0.4, 3.4],
+                    [1.3, 0.7, 3.8],
+                ]
+            )
+        )
+
+        for t, ignore_class in tests:
+            t = backend.constant(t)
+            result = backend.sparse_categorical_crossentropy(
+                t, p, ignore_class=ignore_class
+            )
+            self.assertArrayNear(
+                self.evaluate(result),
+                [0.0, 0.07428224, 0.13980183, 0.11967831],
+                1e-3,
+            )
+
+    @test_combinations.generate(
+        test_combinations.combine(mode=["graph", "eager"])
+    )
+    def test_sparse_cce_loss_with_ignore_class_for_segmentation(self):
+        t = backend.constant(
+            [[[0, 2], [-1, -1]], [[0, 2], [-1, -1]], [[0, 0], [0, 0]]]
+        )
+        p = backend.constant(
+            [
+                [
+                    [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                    [[0.2, 0.5, 0.3], [0.0, 1.0, 0.0]],
+                ],
+                [
+                    [[1.0, 0.0, 0.0], [0.0, 0.5, 0.5]],
+                    [[0.2, 0.5, 0.3], [0.0, 1.0, 0.0]],
+                ],
+                [
+                    [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    [[0.1, 0.9, 0.0], [0.2, 0.8, 0.0]],
+                ],
+            ]
+        )
+
+        expected_result = [
+            [[0.0, 0.0], [0.0, 0.0]],
+            [[0.0, 0.693148], [0.0, 0.0]],
+            [[0.0, 0.0], [2.302585, 1.609438]],
+        ]
+
+        # total_entries = 12
+        # valid_entries = 8
+        expected_mask = backend.constant(
+            [
+                [[True, True], [False, False]],
+                [[True, True], [False, False]],
+                [[True, True], [True, True]],
+            ]
+        )
+
+        result = backend.sparse_categorical_crossentropy(t, p, ignore_class=-1)
+        mask = losses_utils.get_mask(result)
+
+        self.assertIsNotNone(
+            mask,
+            "expected sparse_categorical_crossentropy to set the "
+            "`_keras_mask` attribute when `ignore_class is not None`, "
+            "which indicates which loss values are valid.",
+        )
+
+        result = self.evaluate(result)
+        mask = self.evaluate(mask)
+        self.assertAllEqual(mask, expected_mask)
+        self.assertAllClose(result, expected_result, atol=1e-6)
 
     @test_combinations.generate(test_combinations.combine(mode=["graph"]))
     def test_sparse_categorical_crossentropy_loss_with_unknown_rank_tensor(
@@ -2479,6 +2597,63 @@ class FunctionTest(tf.test.TestCase):
 
         f = backend.function(inputs=placeholders, outputs=outputs)
         results = f({"x": 2.0, "y": 3.0})
+        self.assertEqual(results[0], 6.0)
+
+    def test_function_variable_inputs(self):
+        placeholders = {
+            "x": backend.placeholder(shape=()),
+            "y": backend.placeholder(shape=()),
+        }
+        outputs = [placeholders["x"] * placeholders["y"]]
+
+        f = backend.function(inputs=placeholders, outputs=outputs)
+        results = f({"x": backend.variable(2.0), "y": 3.0})
+        self.assertEqual(results[0], 6.0)
+
+    def test_function_composite_variable_inputs(self):
+        if context.executing_eagerly():
+            self.skipTest(
+                "Only graph mode flattens composite tensor inputs into flat "
+                "tensors."
+            )
+
+        class Spec(tf.TypeSpec):
+            value_type = property(lambda self: CompositeVariable)
+
+            def _serialize(self):
+                pass
+
+            def _component_specs(self):
+                pass
+
+            def _to_components(self, value):
+                return value.variables
+
+            def _from_components(self, variable_list):
+                return CompositeVariable(variable_list)
+
+        class CompositeVariable(tf.__internal__.CompositeTensor):
+            def __init__(self, variable_list):
+                self.variables = variable_list
+
+            @property
+            def _type_spec(self):
+                return Spec()
+
+            def _convert_variables_to_tensors(self):
+                self.variables = tf.nest.map_structure(
+                    tf_utils.convert_variables_to_tensors, self.variables
+                )
+                return self
+
+        placeholders = {
+            "x": backend.placeholder(shape=()),
+            "y": backend.placeholder(shape=()),
+        }
+        outputs = [placeholders["x"] * placeholders["y"]]
+
+        f = backend.function(inputs=placeholders, outputs=outputs)
+        results = f({"x": CompositeVariable([backend.variable(2.0)]), "y": 3.0})
         self.assertEqual(results[0], 6.0)
 
     def test_function_single_input_output(self):

@@ -88,6 +88,12 @@ class OptimizersTest(test_util.DTensorBaseTest):
             {"amsgrad": True},
             ["Adam/m/Variable", "Adam/v/Variable", "Adam/vhat/Variable"],
         ),
+        (
+            "AdamW",
+            optimizers.AdamW,
+            {"amsgrad": True},
+            ["AdamW/m/Variable", "AdamW/v/Variable", "AdamW/vhat/Variable"],
+        ),
         ("Adagrad", optimizers.Adagrad, {}, ["Adagrad/accumulator/Variable"]),
         (
             "RMSprop",
@@ -121,12 +127,11 @@ class OptimizersTest(test_util.DTensorBaseTest):
 
         grads = tf.ones_like(variable_init_value)
         optimizer.apply_gradients(zip([grads], [model_variable]))
-        optimizer_variables = optimizer.variables
+        optimizer_variables = optimizer.variables()
 
         self.assertEqual(self.evaluate(optimizer.iterations), 1)
 
         all_names = [var._shared_name for var in optimizer_variables]
-        expect_variable_names.extend(["iteration", "learning_rate"])
         self.assertCountEqual(all_names, expect_variable_names)
 
 

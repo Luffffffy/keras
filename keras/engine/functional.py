@@ -104,7 +104,7 @@ class Functional(training_lib.Model):
 
     Note that the `backbone` and `activations` models are not
     created with `keras.Input` objects, but with the tensors that are originated
-    from `keras.Inputs` objects. Under the hood, the layers and weights will
+    from `keras.Input` objects. Under the hood, the layers and weights will
     be shared across these models, so that user can train the `full_model`, and
     use `backbone` or `activations` to do feature extraction.
     The inputs and outputs of the model can be nested structures of tensors as
@@ -779,6 +779,24 @@ class Functional(training_lib.Model):
         # Continue adding configs into what the super class has added.
         config = super().get_config()
         return copy.deepcopy(get_network_config(self, config=config))
+
+    def get_weight_paths(self):
+        result = {}
+        for layer in self.layers:
+            (
+                descendants,
+                object_paths_dict,
+            ) = tf.__internal__.tracking.ObjectGraphView(
+                layer
+            ).breadth_first_traversal()
+            for descendant in descendants:
+                if isinstance(descendant, tf.Variable):
+                    trackable_references = object_paths_dict[descendant]
+                    object_path = ".".join(
+                        [t.name for t in trackable_references]
+                    )
+                    result[layer.name + "." + object_path] = descendant
+        return result
 
     def _validate_graph_inputs_and_outputs(self):
         """Validates the inputs and outputs of a Graph Network."""

@@ -114,7 +114,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     Note that the `backbone` and `activations` models are not
     created with `keras.Input` objects, but with the tensors that are originated
-    from `keras.Inputs` objects. Under the hood, the layers and weights will
+    from `keras.Input` objects. Under the hood, the layers and weights will
     be shared across these models, so that user can train the `full_model`, and
     use `backbone` or `activations` to do feature extraction.
     The inputs and outputs of the model can be nested structures of tensors as
@@ -3280,6 +3280,79 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
             "Provide either a layer name or layer index at " "`get_layer`."
         )
 
+    def get_weight_paths(self):
+        """Retrieve all the variables and their paths for the model.
+
+        The variable path (string) is a stable key to indentify a `tf.Variable`
+        instance owned by the model. It can be used to specify variable-specific
+        configurations (e.g. DTensor, quantization) from a global view.
+
+        This method returns a dict with weight object paths as keys
+        and the corresponding `tf.Variable` instances as values.
+
+        Note that if the model is a subclassed model and the weights haven't
+        been initialized, an empty dict will be returned.
+
+        Returns:
+            A dict where keys are variable paths and values are `tf.Variable`
+             instances.
+
+        Example:
+
+        ```python
+        class SubclassModel(tf.keras.Model):
+
+          def __init__(self, name=None):
+            super().__init__(name=name)
+            self.d1 = tf.keras.layers.Dense(10)
+            self.d2 = tf.keras.layers.Dense(20)
+
+          def call(self, inputs):
+            x = self.d1(inputs)
+            return self.d2(x)
+
+        model = SubclassModel()
+        model(tf.zeros((10, 10)))
+        weight_paths = model.get_weight_paths()
+        # weight_paths:
+        # {
+        #    'd1.kernel': model.d1.kernel,
+        #    'd1.bias': model.d1.bias,
+        #    'd2.kernel': model.d2.kernel,
+        #    'd2.bias': model.d2.bias,
+        # }
+
+        # Functional model
+        inputs = tf.keras.Input((10,), batch_size=10)
+        x = tf.keras.layers.Dense(20, name='d1')(inputs)
+        output = tf.keras.layers.Dense(30, name='d2')(x)
+        model = tf.keras.Model(inputs, output)
+        d1 = model.layers[1]
+        d2 = model.layers[2]
+        weight_paths = model.get_weight_paths()
+        # weight_paths:
+        # {
+        #    'd1.kernel': d1.kernel,
+        #    'd1.bias': d1.bias,
+        #    'd2.kernel': d2.kernel,
+        #    'd2.bias': d2.bias,
+        # }
+        ```
+        """
+        result = {}
+        (
+            descendants,
+            object_paths_dict,
+        ) = tf.__internal__.tracking.ObjectGraphView(
+            self
+        ).breadth_first_traversal()
+        for descendant in descendants:
+            if isinstance(descendant, tf.Variable):
+                trackable_references = object_paths_dict[descendant]
+                object_path = ".".join([t.name for t in trackable_references])
+                result[object_path] = descendant
+        return result
+
     @tf.__internal__.tracking.no_automatic_dependency_tracking
     def _set_save_spec(self, inputs, args=None, kwargs=None):
         """Defines the save spec so that serialization is able to trace model call.
@@ -3663,16 +3736,46 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
 
 def reduce_per_replica(values, strategy, reduction="first"):
-    """Reduce PerReplica objects.
+    """Attempt to reduce the structure `values` to single values.
+
+    Given `values` (a `tf.Tensor` or a `PerReplica` structure),
+    which represents the values across all the replicas, `reduce_per_replica`
+    attempts to "reduce" those values and returns the corresponding structure
+    that represents only single values.
+
+    Currently, `reduce_per_replica` is only used for reducing the metric results
+    from `tf.distribute.Strategy.run()`. Depending on the underlying
+    `Strategy` implementation, `values` may be a `PerReplica` object,
+     which can be thought of as a collection of values across the replicas,
+    or a `tf.Tensor`, if the strategy has already conducted the reduction
+    for the downstream library.
+
+    There are three possible outcomes of reduction:
+
+    1) if the `values` is a structure of simple `tf.Tensor`s, meaning that
+       reduction is not actually needed, `reduce_per_replica` returns the
+       structure as-is.
+    2) else, if `reduction="first"`, then `reduce_per_replica`
+       returns the values of the first replica. This is used in the case of
+       training and evaluation, where `values` is expected to hold the same
+       value across the replicas as a result of `Strategy`'s synchronization
+       across the replicas.
+       `reduce_per_replica` does not synchronize the values.
+    3) else, if `reduction="concat"`, then `reduce_per_replica`
+       returns the concatenation of the values across the replicas, along the
+       axis of dimension 0. This is used in the inference case (`predict()`).
 
     Args:
-      values: Structure of `PerReplica` objects or `Tensor`s. `Tensor`s are
-        returned as-is.
+      values: Structure of `PerReplica` objects or `tf.Tensor`s. `tf.Tensor`s
+        are returned as-is.
       strategy: `tf.distribute.Strategy` object.
-      reduction: One of 'first', 'concat'.
+      reduction: One of `"first"`, `"concat"`.
 
     Returns:
-      Structure of `Tensor`s.
+      Structure of `Tensor`s, representing the result of reduction.
+
+    Raises:
+      ValueError: if the reduction method is not supported.
     """
 
     def _reduce(v):
