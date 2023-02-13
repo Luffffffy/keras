@@ -213,8 +213,9 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
 
     @tf.test.disable_with_predicate(
         pred=tf.test.is_built_with_rocm,
-        skip_message="Skipping as ROCm MIOpen does not support padded "
-        "input yet.",
+        skip_message=(
+            "Skipping as ROCm MIOpen does not support padded input yet."
+        ),
     )
     def test_with_masking_layer_GRU(self):
         layer_class = keras.layers.GRU
@@ -232,8 +233,9 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
 
     @tf.test.disable_with_predicate(
         pred=tf.test.is_built_with_rocm,
-        skip_message="Skipping as ROCm MIOpen does not support padded "
-        "input yet.",
+        skip_message=(
+            "Skipping as ROCm MIOpen does not support padded input yet."
+        ),
     )
     def test_masking_with_stacking_GRU(self):
         inputs = np.random.random((2, 3, 4))
@@ -283,8 +285,9 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
 
     @tf.test.disable_with_predicate(
         pred=tf.test.is_built_with_rocm,
-        skip_message="Skipping as ROCm MIOpen does not support padded "
-        "input yet.",
+        skip_message=(
+            "Skipping as ROCm MIOpen does not support padded input yet."
+        ),
     )
     def test_return_states_GRU(self):
         layer_class = keras.layers.GRU
@@ -370,8 +373,9 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
 
     @tf.test.disable_with_predicate(
         pred=tf.test.is_built_with_rocm,
-        skip_message="Skipping as ROCm MIOpen does not support padded "
-        "input yet.",
+        skip_message=(
+            "Skipping as ROCm MIOpen does not support padded input yet."
+        ),
     )
     def test_statefulness_GRU(self):
         num_samples = 2
@@ -481,8 +485,9 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
 
     @tf.test.disable_with_predicate(
         pred=tf.test.is_built_with_rocm,
-        skip_message="Skipping as ROCm MIOpen does not support padded "
-        "input yet.",
+        skip_message=(
+            "Skipping as ROCm MIOpen does not support padded input yet."
+        ),
     )
     @test_utils.run_v2_only
     def test_explicit_device_with_go_backward_and_mask(self):
@@ -492,7 +497,7 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
         units = 4
 
         inputs = np.random.randn(batch_size, timestep, units).astype(np.float32)
-        mask = np.ones((batch_size, timestep)).astype(np.bool)
+        mask = np.ones((batch_size, timestep)).astype(bool)
         mask[:, masksteps:] = 0
 
         gru_layer = keras.layers.GRU(
@@ -605,10 +610,11 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
             existing_loss = loss_value
 
         _, runtime_value = model.predict(x_train)
-        if tf.test.is_gpu_available():
-            self.assertEqual(runtime_value[0], gru_lstm_utils.RUNTIME_GPU)
-        else:
-            self.assertEqual(runtime_value[0], gru_lstm_utils.RUNTIME_CPU)
+        if not tf.sysconfig.get_build_info()["is_rocm_build"]:
+            if tf.test.is_gpu_available():
+                self.assertEqual(runtime_value[0], gru_lstm_utils.RUNTIME_GPU)
+            else:
+                self.assertEqual(runtime_value[0], gru_lstm_utils.RUNTIME_CPU)
 
     @test_utils.run_v2_only
     def test_GRU_runtime(self):
@@ -630,8 +636,9 @@ class GRUGraphRewriteTest(test_combinations.TestCase):
 
     @tf.test.disable_with_predicate(
         pred=tf.test.is_built_with_rocm,
-        skip_message="Skipping as ROCm MIOpen does not support padded "
-        "input yet.",
+        skip_message=(
+            "Skipping as ROCm MIOpen does not support padded input yet."
+        ),
     )
     @test_utils.run_v2_only
     def test_GRU_runtime_with_mask(self):
