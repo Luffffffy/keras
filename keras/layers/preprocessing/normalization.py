@@ -52,11 +52,12 @@ class Normalization(base_preprocessing_layer.PreprocessingLayer):
           example, if shape is `(None, 5)` and `axis=1`, the layer will track 5
           separate mean and variance values for the last axis. If `axis` is set
           to `None`, the layer will normalize all elements in the input by a
-          scalar mean and variance. Defaults to -1, where the last axis of the
+          scalar mean and variance. When `-1` the last axis of the
           input is assumed to be a feature dimension and is normalized per
           index. Note that in the specific case of batched scalar inputs where
           the only axis is the batch axis, the default will normalize each index
           in the batch separately. In this case, consider passing `axis=None`.
+          Defaults to `-1`.
         mean: The mean value(s) to use during normalization. The passed value(s)
           will be broadcast to the shape of the kept axes above; if the value(s)
           cannot be broadcast, an error will be raised when this layer's
@@ -373,6 +374,7 @@ class Normalization(base_preprocessing_layer.PreprocessingLayer):
         config.update(
             {
                 "axis": self.axis,
+                "invert": self.invert,
                 "mean": utils.listify_tensors(self.input_mean),
                 "variance": utils.listify_tensors(self.input_variance),
             }
@@ -385,7 +387,7 @@ class Normalization(base_preprocessing_layer.PreprocessingLayer):
             inputs = tf.cast(inputs, self.compute_dtype)
         return inputs
 
-    def _load_own_variables(self, store):
+    def load_own_variables(self, store):
         # Ensure that we call finalize_state after variable loading.
-        super()._load_own_variables(store)
+        super().load_own_variables(store)
         self.finalize_state()

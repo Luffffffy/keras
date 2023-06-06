@@ -105,12 +105,12 @@ class FeatureSpace(base_layer.Layer):
             "crossed" by hashing their combined value into
             a fixed-length vector.
         crossing_dim: Default vector size for hashing crossed features.
-            Defaults to 32.
+            Defaults to `32`.
         hashing_dim: Default vector size for hashing features of type
-            `"integer_hashed"` and `"string_hashed"`. Defaults to 32.
+            `"integer_hashed"` and `"string_hashed"`. Defaults to `32`.
         num_discretization_bins: Default number of bins to be used for
             discretizing features of type `"float_discretized"`.
-            Defaults to 32.
+            Defaults to `32`.
 
     **Available feature types:**
 
@@ -765,8 +765,8 @@ class FeatureSpace(base_layer.Layer):
         """
         saving_lib.save_model(self, filepath)
 
-    def _save_own_variables(self, store):
+    def save_own_variables(self, store):
         return
 
-    def _load_own_variables(self, store):
+    def load_own_variables(self, store):
         return

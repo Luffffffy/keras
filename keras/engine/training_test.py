@@ -2391,6 +2391,92 @@ class TrainingTest(test_combinations.TestCase):
         self.assertEqual(input_specs[2].shape.as_list(), [3, 3])
 
 
+class TestAutotuneSPE(test_combinations.TestCase):
+    @test_combinations.run_all_keras_modes(always_skip_v1=True)
+    def test_compile_fit_with_jit_compile(self):
+        # Test with jit_compile = True
+        model = sequential.Sequential([layers_module.Dense(1)])
+        model.compile(
+            "sgd",
+            loss="mse",
+            run_eagerly=False,
+            jit_compile=True,
+            steps_per_execution="auto",
+        )
+        x, y = np.ones((10, 1)), np.ones((10, 1))
+        model.fit(x, y, epochs=2)
+        # Test fcompile fit for a RNN model
+        model = sequential.Sequential()
+        model.add(
+            layers_module.TimeDistributed(
+                layers_module.Embedding(5, 6, mask_zero=True),
+                input_shape=(None, None),
+            )
+        )  # N by t_1 by t_2 by 6
+        model.add(
+            layers_module.TimeDistributed(
+                layers_module.SimpleRNN(7, return_sequences=True)
+            )
+        )
+        model.add(
+            layers_module.TimeDistributed(
+                layers_module.SimpleRNN(8, return_sequences=False)
+            )
+        )
+        model.add(layers_module.SimpleRNN(1, return_sequences=False))
+        model.compile(
+            optimizer="sgd",
+            loss="mse",
+            jit_compile=True,
+            steps_per_execution="auto",
+        )
+        model_input = np.random.randint(
+            low=1, high=5, size=(10, 3, 4), dtype="int32"
+        )
+        for i in range(4):
+            model_input[i, i:, i:] = 0
+        model.fit(
+            model_input, np.random.random((10, 1)), epochs=1, batch_size=10
+        )
+
+    @test_combinations.run_all_keras_modes(always_skip_v1=True)
+    def test_compile_fit_evaluate_predict_with_mirrored_strategy(self):
+        # Test with jit_compile = True
+        strategy = tf.distribute.MirroredStrategy()
+        with strategy.scope():
+            model = sequential.Sequential([layers_module.Dense(1)])
+        model.compile(
+            "sgd",
+            loss="mse",
+            run_eagerly=False,
+            jit_compile=True,
+            steps_per_execution="auto",
+        )
+        x, y = np.ones((10, 1)), np.ones((10, 1))
+        model.fit(x, y, epochs=2)
+        model.evaluate(x, y)
+        model.predict(x)
+
+    @test_combinations.run_all_keras_modes(always_skip_v1=True)
+    def test_spe_tune_compile_fit_then_false_predict(self):
+        strategy = tf.distribute.MirroredStrategy()
+        with strategy.scope():
+            model = sequential.Sequential([layers_module.Dense(1)])
+        model.compile(
+            "sgd",
+            loss="mse",
+            run_eagerly=False,
+            jit_compile=True,
+            steps_per_execution="auto",
+        )
+        x, y = np.ones((10, 1)), np.ones((10, 1))
+        model.fit(x, y, epochs=2)
+        model.evaluate(x, y)
+        model.enable_tune_steps_per_execution = False
+        model.predict(x)
+        assert model.enable_tune_steps_per_execution == False
+
+
 class TestExceptionsAndWarnings(test_combinations.TestCase):
     @test_combinations.run_all_keras_modes(always_skip_v1=True)
     @test_combinations.run_with_all_model_types
@@ -2584,6 +2670,46 @@ class LossWeightingTest(test_combinations.TestCase):
         )
         # TODO(b/152990697): Fix the class weights test here.
         # self.assertLess(score[0], ref_score[0])
+
+    @test_combinations.run_all_keras_modes(always_skip_v1=True)
+    def test_segmentation_class_weights(self):
+        num_channels = 3
+        num_classes = 5
+        batch_size = 2
+        image_width = 8
+
+        input_shape = (batch_size, image_width, image_width, num_channels)
+        output_shape = (batch_size, image_width, image_width, num_classes)
+
+        model = sequential.Sequential([layers_module.Conv2D(num_classes, 1)])
+
+        model.compile(
+            loss="categorical_crossentropy",
+            metrics=["acc", metrics_module.CategoricalAccuracy()],
+            weighted_metrics=["mae", metrics_module.CategoricalAccuracy()],
+            optimizer="adam",
+            run_eagerly=test_utils.should_run_eagerly(),
+        )
+
+        x = tf.random.uniform(input_shape)
+        y = tf.random.uniform(output_shape, dtype=tf.int32, maxval=num_classes)
+
+        # Class weights are just the class value + 1
+        class_weight = dict([(i, i + 1) for i in range(num_classes)])
+
+        # This test simply asserts that the model can be compiled and fit
+        # can run without error. Verification that the class weights are
+        # applied correctly is performed in data_adapter_test.
+        model.fit(x, y, class_weight=class_weight, steps_per_epoch=1)
+
+        sample_weight = np.array([x + 1 for x in range(batch_size)])
+        model.fit(
+            x,
+            y,
+            class_weight=class_weight,
+            sample_weight=sample_weight,
+            steps_per_epoch=1,
+        )
 
     @test_combinations.run_all_keras_modes
     def test_temporal_sample_weights(self):
@@ -4539,6 +4665,72 @@ class TestTrainingWithMetrics(test_combinations.TestCase):
             list(dict_test_on_batch_res.keys()),
             ["loss", "mae", "my_mse", "my_rmse"],
         )
+
+    @test_combinations.run_all_keras_modes(always_skip_v1=True)
+    def test_add_metric_in_model_call_that_returns_dict(self):
+        class DictMetric(metrics_module.Metric):
+            def __init__(self):
+                super().__init__()
+                self.sample_count = tf.Variable(0)
+                self.l2_sum = tf.Variable(0.0)
+
+            def update_state(self, y_true, y_pred, sample_weight=None):
+                self.l2_sum.assign_add(
+                    tf.reduce_sum(tf.square(y_true - y_pred))
+                )
+                self.sample_count.assign_add(tf.shape(y_true)[0])
+
+            def reset_state(self):
+                self.sample_count.assign(0)
+                self.l2_sum.assign(0.0)
+
+            def result(self):
+                mse = self.l2_sum / tf.cast(self.sample_count, "float32")
+                rmse = tf.sqrt(mse)
+                return {"my_mse": mse, "my_rmse": rmse}
+
+        class TestModel(training_module.Model):
+            def __init__(self):
+                super().__init__(name="test_model")
+                self.dense1 = layers_module.Dense(2, kernel_initializer="ones")
+                self.dict_metric = DictMetric()
+
+            def call(self, x):
+                self.add_metric(
+                    tf.reduce_sum(x), name="metric_2", aggregation="mean"
+                )
+                # Provide same name as in the instance created in __init__
+                # for eager mode
+                self.add_metric(self.dict_metric(x, 1 - x), name="metric_1")
+                return self.dense1(x)
+
+        model = TestModel()
+        model.compile(
+            loss="mse",
+            optimizer=RMSPropOptimizer(0.01),
+            run_eagerly=test_utils.should_run_eagerly(),
+        )
+
+        x = np.ones(shape=(10, 1))
+        y = np.ones(shape=(10, 2))
+        history = model.fit(
+            x, y, epochs=2, batch_size=5, validation_data=(x, y)
+        )
+        self.assertAlmostEqual(history.history["metric_2"][-1], 5, 0)
+        self.assertAlmostEqual(history.history["val_metric_2"][-1], 5, 0)
+        self.assertAlmostEqual(history.history["my_mse"][-1], 1, 0)
+        self.assertAlmostEqual(history.history["val_my_mse"][-1], 1, 0)
+        self.assertAlmostEqual(history.history["my_rmse"][-1], 1, 0)
+        self.assertAlmostEqual(history.history["val_my_rmse"][-1], 1, 0)
+
+        eval_results = model.evaluate(x, y, batch_size=5, return_dict=True)
+        self.assertAlmostEqual(eval_results["metric_2"], 5, 0)
+        self.assertAlmostEqual(eval_results["my_mse"], 1, 0)
+        self.assertAlmostEqual(eval_results["my_rmse"], 1, 0)
+
+        model.predict(x, batch_size=5)
+        model.train_on_batch(x, y)
+        model.test_on_batch(x, y)
 
 
 class BareUpdateLayer(layers_module.Layer):

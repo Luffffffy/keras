@@ -323,22 +323,6 @@ class BatchNormalizationBase(Layer):
         else:
             return self.dtype or tf.float32
 
-    def _support_zero_size_input(self):
-        if not tf.distribute.has_strategy():
-            return False
-        strategy = tf.distribute.get_strategy()
-        # TODO(b/195085185): remove experimental_enable_get_next_as_optional
-        # after migrating all users.
-        return getattr(
-            strategy.extended,
-            "enable_partial_batch_handling",
-            getattr(
-                strategy.extended,
-                "experimental_enable_get_next_as_optional",
-                False,
-            ),
-        )
-
     def build(self, input_shape):
         self.axis = tf_utils.validate_axis(self.axis, input_shape)
         input_shape = tf.TensorShape(input_shape)
@@ -559,6 +543,324 @@ class BatchNormalizationBase(Layer):
             if partitioner:
                 self._scope.set_partitioner(partitioner)
         self.built = True
+
+    def call(self, inputs, training=None, mask=None):
+        inputs = tf.cast(inputs, self.compute_dtype)
+        training = self._get_training_value(training)
+        # Determine a boolean value for `training`: could be True, False, or
+        # None.
+        training_value = control_flow_util.constant_value(training)
+        _raise_for_non_sync_bn_with_renorm_and_dtensor_strategy(
+            synchronized=self.synchronized,
+            training=training,
+            renorm=self.renorm,
+        )
+
+        if self.virtual_batch_size is not None:
+            # Virtual batches (aka ghost batches) can be simulated by reshaping
+            # the Tensor and reusing the existing batch norm implementation
+            original_shape = tf.shape(inputs)
+            original_shape = tf.concat(
+                [tf.constant([-1]), original_shape[1:]], axis=0
+            )
+
+            if tf.__internal__.tf2.enabled():
+                expanded_shape = (
+                    [self.virtual_batch_size, -1] if training_value else [-1, 1]
+                )
+                expanded_shape = tf.concat(
+                    [
+                        tf.constant(expanded_shape),
+                        original_shape[1:],
+                    ],
+                    axis=0,
+                )
+            else:
+                # Preserve incorrect legacy behavior for backwards compatibility
+                expanded_shape = tf.concat(
+                    [
+                        tf.constant([self.virtual_batch_size, -1]),
+                        original_shape[1:],
+                    ],
+                    axis=0,
+                )
+
+            # Will cause errors if virtual_batch_size does not divide the batch
+            # size
+            inputs = tf.reshape(inputs, expanded_shape)
+
+            def undo_virtual_batching(outputs):
+                outputs = tf.reshape(outputs, original_shape)
+                return outputs
+
+        if self.fused:
+            outputs = self._fused_batch_norm(
+                inputs, mask=mask, training=training
+            )
+            if self.virtual_batch_size is not None:
+                # Currently never reaches here since fused_batch_norm does not
+                # support virtual batching
+                outputs = undo_virtual_batching(outputs)
+            return outputs
+
+        inputs_dtype = inputs.dtype.base_dtype
+        if inputs_dtype in (tf.float16, tf.bfloat16):
+            # Do all math in float32 if given 16-bit inputs for numeric
+            # stability.  In particular, it's very easy for variance to overflow
+            # in float16 and for safety we also choose to cast bfloat16 to
+            # float32.
+            inputs = tf.cast(inputs, tf.float32)
+
+        # Compute the axes along which to reduce the mean / variance
+        input_shape = inputs.shape
+        ndims = len(input_shape)
+        reduction_axes = [i for i in range(ndims) if i not in self.axis]
+        if self.virtual_batch_size is not None:
+            del reduction_axes[1]  # Do not reduce along virtual batch dim
+
+        # Broadcasting only necessary for single-axis batch norm where the axis
+        # is not the last dimension
+        broadcast_shape = [1] * ndims
+        broadcast_shape[self.axis[0]] = input_shape.dims[self.axis[0]].value
+
+        def _broadcast(v):
+            if (
+                v is not None
+                and len(v.shape) != ndims
+                and reduction_axes != list(range(ndims - 1))
+            ):
+                return tf.reshape(v, broadcast_shape)
+            return v
+
+        scale, offset = _broadcast(self.gamma), _broadcast(self.beta)
+
+        def _compose_transforms(scale, offset, then_scale, then_offset):
+            if then_scale is not None:
+                scale *= then_scale
+                offset *= then_scale
+            if then_offset is not None:
+                offset += then_offset
+            return (scale, offset)
+
+        if training_value == False:  # noqa: E712
+            mean, variance = self.moving_mean, self.moving_variance
+        else:
+            # The following long block are handling mean/variance update during
+            # the training stage in various of different settings.
+            if self.adjustment:
+                adj_scale, adj_bias = self.adjustment(tf.shape(inputs))
+                # Adjust only during training.
+                adj_scale = control_flow_util.smart_cond(
+                    training, lambda: adj_scale, lambda: tf.ones_like(adj_scale)
+                )
+                adj_bias = control_flow_util.smart_cond(
+                    training, lambda: adj_bias, lambda: tf.zeros_like(adj_bias)
+                )
+                scale, offset = _compose_transforms(
+                    adj_scale, adj_bias, scale, offset
+                )
+
+            # Some of the computations here are not necessary when
+            # training==False but not a constant. However, this makes the code
+            # simpler.
+            keep_dims = (
+                self.virtual_batch_size is not None or len(self.axis) > 1
+            )
+            mean, variance = self._moments(
+                tf.cast(inputs, self._param_dtype),
+                reduction_axes,
+                keep_dims=keep_dims,
+                mask=mask,
+            )
+
+            moving_mean = self.moving_mean
+            moving_variance = self.moving_variance
+
+            mean = control_flow_util.smart_cond(
+                training,
+                lambda: mean,
+                lambda: tf.convert_to_tensor(moving_mean),
+            )
+            variance = control_flow_util.smart_cond(
+                training,
+                lambda: variance,
+                lambda: tf.convert_to_tensor(moving_variance),
+            )
+
+            if self.virtual_batch_size is not None:
+                # This isn't strictly correct since in ghost batch norm, you are
+                # supposed to sequentially update the moving_mean and
+                # moving_variance with each sub-batch. However, since the moving
+                # statistics are only used during evaluation, it is more
+                # efficient to just update in one step and should not make a
+                # significant difference in the result.
+                new_mean = tf.reduce_mean(mean, axis=1, keepdims=True)
+                new_variance = tf.reduce_mean(variance, axis=1, keepdims=True)
+            else:
+                if (
+                    utils.running_with_dtensor_strategy()
+                    and not self.synchronized
+                ):
+                    new_mean = tf.math.reduce_mean(mean, axis=reduction_axes)
+                    new_variance = tf.math.reduce_mean(
+                        variance, axis=reduction_axes
+                    )
+                else:
+                    new_mean, new_variance = mean, variance
+
+            if self._support_zero_size_input():
+                # Keras assumes that batch dimension is the first dimension for
+                # Batch Normalization.
+                input_batch_size = tf.shape(inputs)[0]
+            else:
+                input_batch_size = None
+
+            if self.renorm:
+                (
+                    r,
+                    d,
+                    new_mean,
+                    new_variance,
+                ) = self._renorm_correction_and_moments(
+                    new_mean, new_variance, training, input_batch_size
+                )
+                # When training, the normalized values (say, x) will be
+                # transformed as x * gamma + beta without renorm, and (x * r +
+                # d) * gamma + beta = x * (r * gamma) + (d * gamma + beta) with
+                # renorm.
+                r = _broadcast(tf.stop_gradient(r, name="renorm_r"))
+                d = _broadcast(tf.stop_gradient(d, name="renorm_d"))
+                scale, offset = _compose_transforms(r, d, scale, offset)
+
+            def _do_update(var, value):
+                """Compute the updates for mean and variance."""
+                return self._assign_moving_average(
+                    var, value, self.momentum, input_batch_size
+                )
+
+            def mean_update():
+                true_branch = lambda: _do_update(self.moving_mean, new_mean)
+                false_branch = lambda: self.moving_mean
+                return control_flow_util.smart_cond(
+                    training, true_branch, false_branch
+                )
+
+            def variance_update():
+                """Update the moving variance."""
+
+                def true_branch_renorm():
+                    # We apply epsilon as part of the moving_stddev to mirror
+                    # the training code path.
+                    moving_stddev = _do_update(
+                        self.moving_stddev, tf.sqrt(new_variance + self.epsilon)
+                    )
+                    return self._assign_new_value(
+                        self.moving_variance,
+                        # Apply relu in case floating point rounding causes it
+                        # to go negative.
+                        backend.relu(
+                            moving_stddev * moving_stddev - self.epsilon
+                        ),
+                    )
+
+                if self.renorm:
+                    true_branch = true_branch_renorm
+                else:
+                    true_branch = lambda: _do_update(
+                        self.moving_variance, new_variance
+                    )
+
+                false_branch = lambda: self.moving_variance
+                return control_flow_util.smart_cond(
+                    training, true_branch, false_branch
+                )
+
+            self.add_update(mean_update)
+            self.add_update(variance_update)
+            # End of handling mean/variance calculation and update.
+
+        mean = tf.cast(mean, inputs.dtype)
+        variance = tf.cast(variance, inputs.dtype)
+        if offset is not None:
+            offset = tf.cast(offset, inputs.dtype)
+        if scale is not None:
+            scale = tf.cast(scale, inputs.dtype)
+        outputs = tf.nn.batch_normalization(
+            inputs,
+            _broadcast(mean),
+            _broadcast(variance),
+            offset,
+            scale,
+            self.epsilon,
+        )
+        if inputs_dtype in (tf.float16, tf.bfloat16):
+            outputs = tf.cast(outputs, inputs_dtype)
+
+        # If some components of the shape got lost due to adjustments, fix that.
+        outputs.set_shape(input_shape)
+
+        if self.virtual_batch_size is not None:
+            outputs = undo_virtual_batching(outputs)
+        return outputs
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = {
+            "axis": self.axis,
+            "momentum": self.momentum,
+            "epsilon": self.epsilon,
+            "center": self.center,
+            "scale": self.scale,
+            "beta_initializer": initializers.serialize(self.beta_initializer),
+            "gamma_initializer": initializers.serialize(self.gamma_initializer),
+            "moving_mean_initializer": initializers.serialize(
+                self.moving_mean_initializer
+            ),
+            "moving_variance_initializer": initializers.serialize(
+                self.moving_variance_initializer
+            ),
+            "beta_regularizer": regularizers.serialize(self.beta_regularizer),
+            "gamma_regularizer": regularizers.serialize(self.gamma_regularizer),
+            "beta_constraint": constraints.serialize(self.beta_constraint),
+            "gamma_constraint": constraints.serialize(self.gamma_constraint),
+        }
+        # Only add TensorFlow-specific parameters if they are set, so as to
+        # preserve model compatibility with external Keras.
+        if self.renorm:
+            config["renorm"] = True
+            config["renorm_clipping"] = self.renorm_clipping
+            config["renorm_momentum"] = self.renorm_momentum
+        if self.virtual_batch_size is not None:
+            config["virtual_batch_size"] = self.virtual_batch_size
+        # Note: adjustment is not serializable.
+        if self.adjustment is not None:
+            logging.warning(
+                "The `adjustment` function of this `BatchNormalization` "
+                "layer cannot be serialized and has been omitted from "
+                "the layer config. It will not be included when "
+                "re-creating the layer from the saved config."
+            )
+        base_config = super().get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    ######################## Start of private methods ##########################
+    def _support_zero_size_input(self):
+        if not tf.distribute.has_strategy():
+            return False
+        strategy = tf.distribute.get_strategy()
+        # TODO(b/195085185): remove experimental_enable_get_next_as_optional
+        # after migrating all users.
+        return getattr(
+            strategy.extended,
+            "enable_partial_batch_handling",
+            getattr(
+                strategy.extended,
+                "experimental_enable_get_next_as_optional",
+                False,
+            ),
+        )
 
     def _assign_moving_average(self, variable, value, momentum, inputs_size):
         def calculate_update_delta():
@@ -846,10 +1148,151 @@ class BatchNormalizationBase(Layer):
                 keepdims=keep_dims,
             )
 
-    def _moments(self, inputs, reduction_axes, keep_dims, mask=None):
-        mean, variance = self._calculate_mean_and_var(
+    def _sync_calculate_mean_and_var(
+        self, x, reduction_axes, keep_dims, mask=None
+    ):
+        with backend.name_scope("moments"):
+            # The dynamic range of fp16 is too limited to support the collection
+            # of sufficient statistics. As a workaround we simply perform the
+            # operations on 32-bit floats before converting the mean and
+            # variance back to fp16
+            y = tf.cast(x, tf.float32) if x.dtype == tf.float16 else x
+            replica_ctx = tf.distribute.get_replica_context()
+
+            if not replica_ctx:
+                return self._no_sync_calculate_mean_and_var(
+                    x, reduction_axes, keep_dims, mask=mask
+                )
+
+            if mask is not None:
+                mask_weights = tf.cast(mask, y.dtype, name="mask_weights")
+                mask_weights = tf.expand_dims(
+                    mask_weights, axis=-1, name="mask_weights_broadcasted"
+                )
+                y *= mask_weights
+                local_count = tf.broadcast_to(
+                    mask_weights, tf.shape(y), name="count"
+                )
+            else:
+                local_count = tf.ones_like(y, name="count")
+
+            local_sum = tf.reduce_sum(y, axis=reduction_axes, keepdims=True)
+            local_squared_sum = tf.reduce_sum(
+                tf.square(y), axis=reduction_axes, keepdims=True
+            )
+            local_count = tf.reduce_sum(
+                local_count, axis=reduction_axes, keepdims=True
+            )
+
+            # TODO(b/163099951): batch the all-reduces once we sort out the
+            # ordering issue for NCCL. We don't have a mechanism to launch
+            # NCCL in the same order in each replica nowadays, so we limit
+            # NCCL to batch all-reduces.
+            y_sum = replica_ctx.all_reduce(
+                tf.distribute.ReduceOp.SUM, local_sum
+            )
+            y_squared_sum = replica_ctx.all_reduce(
+                tf.distribute.ReduceOp.SUM, local_squared_sum
+            )
+            count_sum = replica_ctx.all_reduce(
+                tf.distribute.ReduceOp.SUM, local_count
+            )
+
+            mean = y_sum / count_sum
+            y_squared_mean = y_squared_sum / count_sum
+            # var = E(x^2) - E(x)^2
+            variance = y_squared_mean - tf.square(mean)
+            if not keep_dims:
+                mean = tf.squeeze(mean, reduction_axes)
+                variance = tf.squeeze(variance, reduction_axes)
+            if x.dtype == tf.float16:
+                return (
+                    tf.cast(mean, tf.float16),
+                    tf.cast(variance, tf.float16),
+                )
+            else:
+                return (mean, variance)
+
+    def _dtensor_calculate_mean_and_var(
+        self, inputs, reduction_axes, keep_dims, mask=None
+    ):
+        if self.synchronized:
+            return self._dtensor_sync_calculate_mean_and_var(
+                inputs, reduction_axes, keep_dims, mask=mask
+            )
+        return self._dtensor_no_sync_calculate_mean_and_var(
             inputs, reduction_axes, keep_dims, mask=mask
         )
+
+    def _dtensor_no_sync_calculate_mean_and_var(
+        self, inputs, reduction_axes, keep_dims, mask=None
+    ):
+        replica_tensor = _expand_tensor_with_local_replica_group(inputs)
+        local_batch_size = tf.shape(replica_tensor)[1]
+
+        # Since we added a new axis in the beginning, all the value in
+        # reduction_axes need to be incremented by 1.
+        updated_reduction_axes = [n + 1 for n in reduction_axes]
+
+        if mask is None:
+            mean, var = tf.nn.moments(
+                replica_tensor, updated_reduction_axes, keepdims=keep_dims
+            )
+        else:
+            mask_weights = tf.cast(
+                mask, self.compute_dtype, name="mask_weights"
+            )
+            mask_weights = tf.expand_dims(
+                mask_weights, axis=-1, name="mask_weights_broadcasted"
+            )
+            mask_weights = _expand_tensor_with_local_replica_group(mask_weights)
+            mean, var = tf.nn.weighted_moments(
+                replica_tensor,
+                axes=updated_reduction_axes,
+                frequency_weights=mask_weights,
+                keepdims=keep_dims,
+            )
+        # Also note that the mean/var we have here will have an extra dim in
+        # axis 0, which is represented for num local replica. Down the
+        # stream, the mean/var will be used to update the moving_mean/var
+        # and also normalize the inputs. To make the shape match, we will
+        # expand the tensor shape from [num_replica, x, y] to
+        # [batch_size, x, y] so that it can be properly used for
+        # normalization. When it reaches the mean/var update, a separate
+        # logic will be there to reduce_mean the value based on the batch
+        # dim.
+        mean = tf.repeat(mean, local_batch_size, axis=0)
+        var = tf.repeat(var, local_batch_size, axis=0)
+        if not keep_dims:
+            # We need to fill the reduced dims so that the mean/var can be
+            # properly broadcast to the input shapes. In the example above,
+            # the original reduction_axes is [0, 1]. We ignore the first 0
+            # (batch dim) here since we already expand and use it as num_replica
+            for dim in reduction_axes[1:]:
+                mean = tf.expand_dims(mean, axis=dim)
+                var = tf.expand_dims(var, axis=dim)
+        return mean, var
+
+    def _dtensor_sync_calculate_mean_and_var(
+        self, inputs, reduction_axes, keep_dims, mask=None
+    ):
+        # In the DTensor sync BN, since the input tensor is already in global
+        # context, we just need to use the normal moments/weighted_moments
+        # to calculate mean/var, which is same as the non-sync BN in the normal
+        # mode.
+        return self._no_sync_calculate_mean_and_var(
+            inputs, reduction_axes, keep_dims, mask
+        )
+
+    def _moments(self, inputs, reduction_axes, keep_dims, mask=None):
+        if utils.running_with_dtensor_strategy():
+            mean, variance = self._dtensor_calculate_mean_and_var(
+                inputs, reduction_axes, keep_dims, mask=mask
+            )
+        else:
+            mean, variance = self._calculate_mean_and_var(
+                inputs, reduction_axes, keep_dims, mask=mask
+            )
         # TODO(b/129279393): Support zero batch input in non
         # DistributionStrategy code as well.
         if self._support_zero_size_input():
@@ -873,350 +1316,6 @@ class BatchNormalizationBase(Layer):
                 # from model.
                 training = False
         return training
-
-    def call(self, inputs, training=None, mask=None):
-        inputs = tf.cast(inputs, self.compute_dtype)
-        training = self._get_training_value(training)
-        # Determine a boolean value for `training`: could be True, False, or
-        # None.
-        training_value = control_flow_util.constant_value(training)
-
-        if self.virtual_batch_size is not None:
-            # Virtual batches (aka ghost batches) can be simulated by reshaping
-            # the Tensor and reusing the existing batch norm implementation
-            original_shape = tf.shape(inputs)
-            original_shape = tf.concat(
-                [tf.constant([-1]), original_shape[1:]], axis=0
-            )
-
-            if tf.__internal__.tf2.enabled():
-                expanded_shape = (
-                    [self.virtual_batch_size, -1] if training_value else [-1, 1]
-                )
-                expanded_shape = tf.concat(
-                    [
-                        tf.constant(expanded_shape),
-                        original_shape[1:],
-                    ],
-                    axis=0,
-                )
-            else:
-                # Preserve incorrect legacy behavior for backwards compatibility
-                expanded_shape = tf.concat(
-                    [
-                        tf.constant([self.virtual_batch_size, -1]),
-                        original_shape[1:],
-                    ],
-                    axis=0,
-                )
-
-            # Will cause errors if virtual_batch_size does not divide the batch
-            # size
-            inputs = tf.reshape(inputs, expanded_shape)
-
-            def undo_virtual_batching(outputs):
-                outputs = tf.reshape(outputs, original_shape)
-                return outputs
-
-        if self.fused:
-            outputs = self._fused_batch_norm(
-                inputs, mask=mask, training=training
-            )
-            if self.virtual_batch_size is not None:
-                # Currently never reaches here since fused_batch_norm does not
-                # support virtual batching
-                outputs = undo_virtual_batching(outputs)
-            return outputs
-
-        inputs_dtype = inputs.dtype.base_dtype
-        if inputs_dtype in (tf.float16, tf.bfloat16):
-            # Do all math in float32 if given 16-bit inputs for numeric
-            # stability.  In particular, it's very easy for variance to overflow
-            # in float16 and for safety we also choose to cast bfloat16 to
-            # float32.
-            inputs = tf.cast(inputs, tf.float32)
-
-        # Compute the axes along which to reduce the mean / variance
-        input_shape = inputs.shape
-        ndims = len(input_shape)
-        reduction_axes = [i for i in range(ndims) if i not in self.axis]
-        if self.virtual_batch_size is not None:
-            del reduction_axes[1]  # Do not reduce along virtual batch dim
-
-        # Broadcasting only necessary for single-axis batch norm where the axis
-        # is not the last dimension
-        broadcast_shape = [1] * ndims
-        broadcast_shape[self.axis[0]] = input_shape.dims[self.axis[0]].value
-
-        def _broadcast(v):
-            if (
-                v is not None
-                and len(v.shape) != ndims
-                and reduction_axes != list(range(ndims - 1))
-            ):
-                return tf.reshape(v, broadcast_shape)
-            return v
-
-        scale, offset = _broadcast(self.gamma), _broadcast(self.beta)
-
-        def _compose_transforms(scale, offset, then_scale, then_offset):
-            if then_scale is not None:
-                scale *= then_scale
-                offset *= then_scale
-            if then_offset is not None:
-                offset += then_offset
-            return (scale, offset)
-
-        if training_value == False:  # noqa: E712
-            mean, variance = self.moving_mean, self.moving_variance
-        else:
-            if self.adjustment:
-                adj_scale, adj_bias = self.adjustment(tf.shape(inputs))
-                # Adjust only during training.
-                adj_scale = control_flow_util.smart_cond(
-                    training, lambda: adj_scale, lambda: tf.ones_like(adj_scale)
-                )
-                adj_bias = control_flow_util.smart_cond(
-                    training, lambda: adj_bias, lambda: tf.zeros_like(adj_bias)
-                )
-                scale, offset = _compose_transforms(
-                    adj_scale, adj_bias, scale, offset
-                )
-
-            # Some of the computations here are not necessary when
-            # training==False but not a constant. However, this makes the code
-            # simpler.
-            keep_dims = (
-                self.virtual_batch_size is not None or len(self.axis) > 1
-            )
-            mean, variance = self._moments(
-                tf.cast(inputs, self._param_dtype),
-                reduction_axes,
-                keep_dims=keep_dims,
-                mask=mask,
-            )
-
-            moving_mean = self.moving_mean
-            moving_variance = self.moving_variance
-
-            mean = control_flow_util.smart_cond(
-                training,
-                lambda: mean,
-                lambda: tf.convert_to_tensor(moving_mean),
-            )
-            variance = control_flow_util.smart_cond(
-                training,
-                lambda: variance,
-                lambda: tf.convert_to_tensor(moving_variance),
-            )
-
-            if self.virtual_batch_size is not None:
-                # This isn't strictly correct since in ghost batch norm, you are
-                # supposed to sequentially update the moving_mean and
-                # moving_variance with each sub-batch. However, since the moving
-                # statistics are only used during evaluation, it is more
-                # efficient to just update in one step and should not make a
-                # significant difference in the result.
-                new_mean = tf.reduce_mean(mean, axis=1, keepdims=True)
-                new_variance = tf.reduce_mean(variance, axis=1, keepdims=True)
-            else:
-                new_mean, new_variance = mean, variance
-
-            if self._support_zero_size_input():
-                # Keras assumes that batch dimension is the first dimension for
-                # Batch Normalization.
-                input_batch_size = tf.shape(inputs)[0]
-            else:
-                input_batch_size = None
-
-            if self.renorm:
-                (
-                    r,
-                    d,
-                    new_mean,
-                    new_variance,
-                ) = self._renorm_correction_and_moments(
-                    new_mean, new_variance, training, input_batch_size
-                )
-                # When training, the normalized values (say, x) will be
-                # transformed as x * gamma + beta without renorm, and (x * r +
-                # d) * gamma + beta = x * (r * gamma) + (d * gamma + beta) with
-                # renorm.
-                r = _broadcast(tf.stop_gradient(r, name="renorm_r"))
-                d = _broadcast(tf.stop_gradient(d, name="renorm_d"))
-                scale, offset = _compose_transforms(r, d, scale, offset)
-
-            def _do_update(var, value):
-                """Compute the updates for mean and variance."""
-                return self._assign_moving_average(
-                    var, value, self.momentum, input_batch_size
-                )
-
-            def mean_update():
-                true_branch = lambda: _do_update(self.moving_mean, new_mean)
-                false_branch = lambda: self.moving_mean
-                return control_flow_util.smart_cond(
-                    training, true_branch, false_branch
-                )
-
-            def variance_update():
-                """Update the moving variance."""
-
-                def true_branch_renorm():
-                    # We apply epsilon as part of the moving_stddev to mirror
-                    # the training code path.
-                    moving_stddev = _do_update(
-                        self.moving_stddev, tf.sqrt(new_variance + self.epsilon)
-                    )
-                    return self._assign_new_value(
-                        self.moving_variance,
-                        # Apply relu in case floating point rounding causes it
-                        # to go negative.
-                        backend.relu(
-                            moving_stddev * moving_stddev - self.epsilon
-                        ),
-                    )
-
-                if self.renorm:
-                    true_branch = true_branch_renorm
-                else:
-                    true_branch = lambda: _do_update(
-                        self.moving_variance, new_variance
-                    )
-
-                false_branch = lambda: self.moving_variance
-                return control_flow_util.smart_cond(
-                    training, true_branch, false_branch
-                )
-
-            self.add_update(mean_update)
-            self.add_update(variance_update)
-
-        mean = tf.cast(mean, inputs.dtype)
-        variance = tf.cast(variance, inputs.dtype)
-        if offset is not None:
-            offset = tf.cast(offset, inputs.dtype)
-        if scale is not None:
-            scale = tf.cast(scale, inputs.dtype)
-        outputs = tf.nn.batch_normalization(
-            inputs,
-            _broadcast(mean),
-            _broadcast(variance),
-            offset,
-            scale,
-            self.epsilon,
-        )
-        if inputs_dtype in (tf.float16, tf.bfloat16):
-            outputs = tf.cast(outputs, inputs_dtype)
-
-        # If some components of the shape got lost due to adjustments, fix that.
-        outputs.set_shape(input_shape)
-
-        if self.virtual_batch_size is not None:
-            outputs = undo_virtual_batching(outputs)
-        return outputs
-
-    def compute_output_shape(self, input_shape):
-        return input_shape
-
-    def get_config(self):
-        config = {
-            "axis": self.axis,
-            "momentum": self.momentum,
-            "epsilon": self.epsilon,
-            "center": self.center,
-            "scale": self.scale,
-            "beta_initializer": initializers.serialize(self.beta_initializer),
-            "gamma_initializer": initializers.serialize(self.gamma_initializer),
-            "moving_mean_initializer": initializers.serialize(
-                self.moving_mean_initializer
-            ),
-            "moving_variance_initializer": initializers.serialize(
-                self.moving_variance_initializer
-            ),
-            "beta_regularizer": regularizers.serialize(self.beta_regularizer),
-            "gamma_regularizer": regularizers.serialize(self.gamma_regularizer),
-            "beta_constraint": constraints.serialize(self.beta_constraint),
-            "gamma_constraint": constraints.serialize(self.gamma_constraint),
-        }
-        # Only add TensorFlow-specific parameters if they are set, so as to
-        # preserve model compatibility with external Keras.
-        if self.renorm:
-            config["renorm"] = True
-            config["renorm_clipping"] = self.renorm_clipping
-            config["renorm_momentum"] = self.renorm_momentum
-        if self.virtual_batch_size is not None:
-            config["virtual_batch_size"] = self.virtual_batch_size
-        # Note: adjustment is not serializable.
-        if self.adjustment is not None:
-            logging.warning(
-                "The `adjustment` function of this `BatchNormalization` "
-                "layer cannot be serialized and has been omitted from "
-                "the layer config. It will not be included when "
-                "re-creating the layer from the saved config."
-            )
-        base_config = super().get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    def _sync_calculate_mean_and_var(self, x, axes, keep_dims, mask=None):
-        with backend.name_scope("moments"):
-            # The dynamic range of fp16 is too limited to support the collection
-            # of sufficient statistics. As a workaround we simply perform the
-            # operations on 32-bit floats before converting the mean and
-            # variance back to fp16
-            y = tf.cast(x, tf.float32) if x.dtype == tf.float16 else x
-            replica_ctx = tf.distribute.get_replica_context()
-
-            if not replica_ctx:
-                return self._no_sync_calculate_mean_and_var(
-                    x, axes, keep_dims, mask=mask
-                )
-
-            if mask is not None:
-                mask_weights = tf.cast(mask, tf.float32, name="mask_weights")
-                mask_weights = tf.expand_dims(
-                    mask_weights, axis=-1, name="mask_weights_broadcasted"
-                )
-                y *= mask_weights
-
-            local_sum = tf.reduce_sum(y, axis=axes, keepdims=True)
-            local_squared_sum = tf.reduce_sum(
-                tf.square(y), axis=axes, keepdims=True
-            )
-
-            batch_size = tf.cast(tf.shape(y)[axes[0]], tf.float32)
-            # TODO(b/163099951): batch the all-reduces once we sort out the
-            # ordering issue for NCCL. We don't have a mechanism to launch
-            # NCCL in the same order in each replica nowadays, so we limit
-            # NCCL to batch all-reduces.
-            y_sum = replica_ctx.all_reduce(
-                tf.distribute.ReduceOp.SUM, local_sum
-            )
-            y_squared_sum = replica_ctx.all_reduce(
-                tf.distribute.ReduceOp.SUM, local_squared_sum
-            )
-            global_batch_size = replica_ctx.all_reduce(
-                tf.distribute.ReduceOp.SUM, batch_size
-            )
-
-            axes_vals = [(tf.shape(y))[axes[i]] for i in range(1, len(axes))]
-            multiplier = tf.cast(tf.reduce_prod(axes_vals), tf.float32)
-            multiplier = multiplier * global_batch_size
-
-            mean = y_sum / multiplier
-            y_squared_mean = y_squared_sum / multiplier
-            # var = E(x^2) - E(x)^2
-            variance = y_squared_mean - tf.square(mean)
-            if not keep_dims:
-                mean = tf.squeeze(mean, axes)
-                variance = tf.squeeze(variance, axes)
-            if x.dtype == tf.float16:
-                return (
-                    tf.cast(mean, tf.float16),
-                    tf.cast(variance, tf.float16),
-                )
-            else:
-                return (mean, variance)
 
 
 @keras_export("keras.layers.BatchNormalization", v1=[])
@@ -1446,4 +1545,52 @@ class SyncBatchNormalization(BatchNormalizationBase):
             gamma_constraint=gamma_constraint,
             synchronized=True,
             **kwargs,
+        )
+
+
+def _expand_tensor_with_local_replica_group(inputs):
+    """Reshape the input tensor to have an extra dimension of replica group.
+
+    Under the DTensor usage, the normal batch norm still need to perform on
+    a local batch size, which mean we can't directly do mean/var on a global
+    tensor. In order to do a local mean/var, we have to add a new dimention to
+    the tensor, so that the ops will not cross the replica boundary. E.g,
+    a global tensor with shape [8, x, y] and has 2 local replica, the output of
+    this will be [2, 4, x, y], where the first dim is for num of replica, and
+    the second dim is for the local batch size. The follow ops can do reduces
+    among the local batch dimension.
+
+    Note that this function should only be used under DTensor based strategy,
+    and it will use the current strategy in the context to get the number of
+    replica.
+
+    Args:
+        inputs: Tensor with shape [global_batch_size, ...]
+
+    Returns:
+        Tensor with shape [num_replica, local_batch_size, ...]
+    """
+    # TODO(b/272382109): Implement this an an Op.
+    input_shape = tf.shape(inputs)
+    global_batch_size = input_shape[0]
+    num_replica = tf.distribute.get_strategy().num_replicas_in_sync
+    local_batch_size = global_batch_size // num_replica
+    replica_shape = tf.stack([num_replica, local_batch_size])
+    replica_shape = tf.concat([replica_shape, input_shape[1:]], axis=0)
+    return tf.reshape(inputs, replica_shape)
+
+
+def _raise_for_non_sync_bn_with_renorm_and_dtensor_strategy(
+    synchronized, training, renorm
+):
+    if (
+        utils.running_with_dtensor_strategy()
+        and not synchronized
+        and training == True
+        and renorm
+    ):
+        raise NotImplementedError(
+            "Renorm for BatchNormalization under DTensor based distribution "
+            "strategy is not supported at the moment. Please file a feature "
+            "request if this is blocking your adoption."
         )

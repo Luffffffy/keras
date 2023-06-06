@@ -1,7 +1,11 @@
 # Description:
 #   Contains the Keras normalization layers (internal TensorFlow version).
 
+# buildifier: disable=same-origin-load
 load("@org_keras//keras:keras.bzl", "cuda_py_test")
+
+# buildifier: disable=same-origin-load
+load("@org_keras//keras:keras.bzl", "tf_py_test")
 
 package(
     # TODO(scottzhu): Remove non-keras deps from TF.
@@ -20,6 +24,7 @@ py_library(
         ":batch_normalization_v1",
         ":group_normalization",
         ":layer_normalization",
+        ":spectral_normalization",
         ":unit_normalization",
     ],
 )
@@ -89,6 +94,16 @@ py_library(
     ],
 )
 
+py_library(
+    name = "spectral_normalization",
+    srcs = ["spectral_normalization.py"],
+    srcs_version = "PY3",
+    deps = [
+        "//:expect_tensorflow_installed",
+        "//keras/engine:base_layer",
+    ],
+)
+
 cuda_py_test(
     name = "group_normalization_test",
     size = "medium",
@@ -134,6 +149,22 @@ cuda_py_test(
     ],
 )
 
+tf_py_test(
+    name = "batch_normalization_dtensor_test",
+    srcs = ["batch_normalization_dtensor_test.py"],
+    shard_count = 2,
+    tags = ["no_oss"],
+    deps = [
+        ":batch_normalization",
+        "//:expect_numpy_installed",
+        "//:expect_tensorflow_installed",
+        "//keras",
+        "//keras/dtensor:test_util",
+        "//keras/testing_infra:test_utils",
+        "//third_party/tensorflow/python/distribute/experimental:mirrored_strategy",
+    ],
+)
+
 cuda_py_test(
     name = "layer_normalization_test",
     size = "medium",
@@ -156,6 +187,20 @@ cuda_py_test(
     name = "unit_normalization_test",
     size = "small",
     srcs = ["unit_normalization_test.py"],
+    python_version = "PY3",
+    deps = [
+        "//:expect_absl_installed",
+        "//:expect_numpy_installed",
+        "//:expect_tensorflow_installed",
+        "//keras",
+        "//keras/testing_infra:test_combinations",
+    ],
+)
+
+cuda_py_test(
+    name = "spectral_normalization_test",
+    size = "small",
+    srcs = ["spectral_normalization_test.py"],
     python_version = "PY3",
     deps = [
         "//:expect_absl_installed",

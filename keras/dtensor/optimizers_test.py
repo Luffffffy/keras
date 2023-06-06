@@ -14,18 +14,31 @@
 # ==============================================================================
 """Tests for initializers."""
 
+import os
+
 import numpy as np
 import tensorflow.compat.v2 as tf
 from absl.testing import parameterized
 
+from keras import backend
+from keras import layers
+from keras import losses
+from keras import models
 from keras.dtensor import dtensor_api as dtensor
-from keras.dtensor import optimizers
+from keras.dtensor import layout_map
 from keras.dtensor import test_util
+from keras.optimizers import adadelta
+from keras.optimizers import adagrad
+from keras.optimizers import adam
+from keras.optimizers import adamw
+from keras.optimizers import rmsprop
+from keras.optimizers import sgd
 
 
 class OptimizersTest(test_util.DTensorBaseTest):
     def setUp(self):
         super().setUp()
+
         global_ids = test_util.create_device_ids_array((2, 2))
         local_device_ids = np.ravel(global_ids).tolist()
         mesh_dict = {
@@ -39,7 +52,7 @@ class OptimizersTest(test_util.DTensorBaseTest):
         self.mesh = self.configTestMesh(mesh_dict)
 
     def test_add_variable_from_reference(self):
-        optimizer = optimizers.Adam(mesh=self.mesh)
+        optimizer = adam.Adam(mesh=self.mesh)
         variable_init_value = tf.ones([4, 4], dtype=tf.float32)
         variable_init_value = dtensor.copy_to_mesh(
             variable_init_value,
@@ -57,7 +70,7 @@ class OptimizersTest(test_util.DTensorBaseTest):
         self.assertEqual(state_variable.layout, model_variable.layout)
 
     def test_build_index_dict(self):
-        optimizer = optimizers.Adam(mesh=self.mesh)
+        optimizer = adam.Adam(mesh=self.mesh)
         variable_init_value = tf.ones(shape=(), dtype=tf.float32)
         variable_init_value = dtensor.copy_to_mesh(
             variable_init_value,
@@ -72,40 +85,74 @@ class OptimizersTest(test_util.DTensorBaseTest):
             optimizer._index_dict[optimizer._var_key(var_list[7])], 7
         )
 
+    def test_aggregate_gradients_noop(self):
+        optimizer = adam.Adam(mesh=self.mesh)
+
+        variable_init_value = tf.ones(shape=(), dtype=tf.float32)
+        model_variable = dtensor.DVariable(variable_init_value, trainable=True)
+        grads = tf.ones_like(variable_init_value)
+
+        grad_and_var = zip([grads], [model_variable])
+
+        result = optimizer.aggregate_gradients(grad_and_var)
+        self.assertEqual(result, grad_and_var)
+
     @parameterized.named_parameters(
         (
             "Adadelta",
-            optimizers.Adadelta,
+            adadelta.Adadelta,
             {},
             [
                 "Adadelta/accumulated_grad/Variable",
                 "Adadelta/accumulated_delta_var/Variable",
+                "iteration",
             ],
         ),
         (
             "Adam",
-            optimizers.Adam,
+            adam.Adam,
             {"amsgrad": True},
-            ["Adam/m/Variable", "Adam/v/Variable", "Adam/vhat/Variable"],
+            [
+                "Adam/m/Variable",
+                "Adam/v/Variable",
+                "Adam/vhat/Variable",
+                "iteration",
+            ],
         ),
         (
             "AdamW",
-            optimizers.AdamW,
+            adamw.AdamW,
             {"amsgrad": True},
-            ["AdamW/m/Variable", "AdamW/v/Variable", "AdamW/vhat/Variable"],
+            [
+                "AdamW/m/Variable",
+                "AdamW/v/Variable",
+                "AdamW/vhat/Variable",
+                "iteration",
+            ],
         ),
-        ("Adagrad", optimizers.Adagrad, {}, ["Adagrad/accumulator/Variable"]),
+        (
+            "Adagrad",
+            adagrad.Adagrad,
+            {},
+            ["Adagrad/accumulator/Variable", "iteration"],
+        ),
         (
             "RMSprop",
-            optimizers.RMSprop,
+            rmsprop.RMSprop,
             {"momentum": 0.1, "centered": True},
             [
                 "RMSprop/velocity/Variable",
                 "RMSprop/momentum/Variable",
                 "RMSprop/average_gradient/Variable",
+                "iteration",
             ],
         ),
-        ("SGD", optimizers.SGD, {"momentum": 0.1}, ["SGD/m/Variable"]),
+        (
+            "SGD",
+            sgd.SGD,
+            {"momentum": 0.1},
+            ["SGD/m/Variable", "iteration"],
+        ),
     )
     def test_apply_gradients(
         self, optimizer_cls, init_args, expect_variable_names
@@ -133,6 +180,69 @@ class OptimizersTest(test_util.DTensorBaseTest):
 
         all_names = [var._shared_name for var in optimizer_variables]
         self.assertCountEqual(all_names, expect_variable_names)
+
+    def test_embedding_lookup_backward_path(self):
+        # See b/265441685 for more context.
+        backend.enable_tf_random_generator()
+        os.environ[
+            "DTENSOR_ENABLE_REPLICATED_SPMD_AS_DEFAULT_TF.RESOURCESCATTERADD"
+        ] = "1"
+        # Build a small functional model with embedding layer, it contains
+        # tf.gather ops which will trigger the _deduplicate_sparse_grad() code
+        # path. tf.unique op will have a shape mismatch issue for dtensor.
+        batch_size = 16
+        seq_length = 10
+        vocab_size = 100
+        output_size = 8
+
+        def produce_data():
+            inputs = tf.random.uniform(
+                maxval=vocab_size,
+                shape=(batch_size, seq_length),
+                dtype=tf.int32,
+            )
+            label = tf.random.uniform(
+                maxval=output_size, shape=(batch_size,), dtype=tf.int32
+            )
+            inputs = dtensor.copy_to_mesh(
+                inputs, layout=dtensor.Layout.replicated(self.mesh, rank=2)
+            )
+            inputs = dtensor.relayout(
+                inputs, dtensor.Layout.batch_sharded(self.mesh, "X", 2)
+            )
+            label = dtensor.copy_to_mesh(
+                label, layout=dtensor.Layout.replicated(self.mesh, rank=1)
+            )
+            label = dtensor.relayout(
+                label, dtensor.Layout.batch_sharded(self.mesh, "X", 1)
+            )
+            return inputs, label
+
+        with layout_map.LayoutMap(self.mesh).scope():
+            inputs = layers.Input(shape=(seq_length,))
+            x = layers.Embedding(vocab_size, 64)(inputs)
+            x = layers.GlobalAveragePooling1D()(x)
+            preds = layers.Dense(output_size, activation="softmax")(x)
+            model = models.Model(inputs, preds)
+
+        optimizer = adam.Adam(mesh=self.mesh)
+
+        @tf.function
+        def train_func(model, inputs, label, optimizer):
+            with tf.GradientTape() as tape:
+                output = model(inputs)
+                loss = losses.sparse_categorical_crossentropy(label, output)
+            optimizer.minimize(loss, model.variables, tape)
+            return loss
+
+        # The error only happens across the batch, where the value of
+        # tf.unique are different.
+        input1, label1 = produce_data()
+        train_func(model, input1, label1, optimizer)
+        input2, label2 = produce_data()
+        train_func(model, input2, label2, optimizer)
+        # Assert nothing here, and expect the train_func can run properly with
+        # different inputs.
 
 
 if __name__ == "__main__":

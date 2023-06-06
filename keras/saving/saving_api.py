@@ -15,6 +15,7 @@
 """Public API surface for saving APIs."""
 
 import os
+import warnings
 import zipfile
 
 import tensorflow.compat.v2 as tf
@@ -116,15 +117,18 @@ def save_model(model, filepath, overwrite=True, save_format=None, **kwargs):
     `tf.keras.saving.load_model`.
     """
     save_format = get_save_format(filepath, save_format)
-    if save_format not in ("keras", "tf", "h5", "keras_v3"):
-        raise ValueError(
-            "Unknown `save_format` argument. Expected one of "
-            "'keras', 'tf', or 'h5'. "
-            f"Received: save_format{save_format}"
+
+    # Deprecation warnings
+    if save_format == "h5":
+        warnings.warn(
+            "You are saving your model as an HDF5 file via `model.save()`. "
+            "This file format is considered legacy. "
+            "We recommend using instead the native Keras format, "
+            "e.g. `model.save('my_model.keras')`.",
+            stacklevel=2,
         )
-    if save_format == "keras_v3" or (
-        saving_lib.saving_v3_enabled() and save_format == "keras"
-    ):
+
+    if save_format == "keras":
         # If file exists and should not be overwritten.
         try:
             exists = os.path.exists(filepath)
@@ -195,7 +199,29 @@ def load_model(
     It is recommended that you use layer attributes to
     access specific variables, e.g. `model.get_layer("dense_1").kernel`.
     """
-    if str(filepath).endswith(".keras") and zipfile.is_zipfile(filepath):
+    is_keras_zip = str(filepath).endswith(".keras") and zipfile.is_zipfile(
+        filepath
+    )
+
+    # Support for remote zip files
+    if (
+        saving_lib.is_remote_path(filepath)
+        and not tf.io.gfile.isdir(filepath)
+        and not is_keras_zip
+    ):
+        local_path = os.path.join(
+            saving_lib.get_temp_dir(), os.path.basename(filepath)
+        )
+
+        # Copy from remote to temporary local directory
+        tf.io.gfile.copy(filepath, local_path, overwrite=True)
+
+        # Switch filepath to local zipfile for loading model
+        if zipfile.is_zipfile(local_path):
+            filepath = local_path
+            is_keras_zip = True
+
+    if is_keras_zip:
         if kwargs:
             raise ValueError(
                 "The following argument(s) are not supported "
@@ -248,21 +274,42 @@ def load_weights(model, filepath, skip_mismatch=False, **kwargs):
 
 
 def get_save_format(filepath, save_format):
-    if saving_lib.saving_v3_enabled():
-        default_format = "keras"
-    elif tf.__internal__.tf2.enabled():
-        default_format = "tf"
+    if save_format:
+        if save_format == "keras_v3":
+            return "keras"
+        if save_format == "keras":
+            if saving_lib.saving_v3_enabled():
+                return "keras"
+            else:
+                return "h5"
+        if save_format in ("h5", "hdf5"):
+            return "h5"
+        if save_format in ("tf", "tensorflow"):
+            return "tf"
+
+        raise ValueError(
+            "Unknown `save_format` argument. Expected one of "
+            "'keras', 'tf', or 'h5'. "
+            f"Received: save_format{save_format}"
+        )
+
+    # No save format specified: infer from filepath.
+
+    if str(filepath).endswith(".keras"):
+        if saving_lib.saving_v3_enabled():
+            return "keras"
+        else:
+            return "h5"
+
+    if str(filepath).endswith((".h5", ".hdf5")):
+        return "h5"
+
+    if h5py is not None and isinstance(filepath, h5py.File):
+        return "h5"
+
+    # No recognizable file format: default to TF in TF2 and h5 in TF1.
+
+    if tf.__internal__.tf2.enabled():
+        return "tf"
     else:
-        default_format = "h5"
-
-    if (h5py is not None and isinstance(filepath, h5py.File)) or str(
-        filepath
-    ).endswith((".h5", ".hdf5")):
-        if save_format and save_format != "h5":
-            raise ValueError(
-                "Provided `save_format` is inconsistent with `filepath`. "
-                f"Received: save_format='{save_format}', filepath='{filepath}'"
-            )
-        save_format = "h5"
-
-    return save_format or default_format
+        return "h5"

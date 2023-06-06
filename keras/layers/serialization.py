@@ -50,6 +50,8 @@ from keras.layers.preprocessing import text_vectorization
 from keras.layers.rnn import cell_wrappers
 from keras.layers.rnn import gru
 from keras.layers.rnn import lstm
+from keras.metrics import base_metric
+from keras.saving import serialization_lib
 from keras.saving.legacy import serialization as legacy_serialization
 from keras.saving.legacy.saved_model import json_utils
 from keras.utils import generic_utils
@@ -207,11 +209,17 @@ def serialize(layer, use_legacy_format=False):
     pprint(tf.keras.layers.serialize(model))
     # prints the configuration of the model, as a dict.
     """
+    if isinstance(layer, base_metric.Metric):
+        raise ValueError(
+            f"Cannot serialize {layer} since it is a metric. "
+            "Please use the `keras.metrics.serialize()` and "
+            "`keras.metrics.deserialize()` APIs to serialize "
+            "and deserialize metrics."
+        )
     if use_legacy_format:
         return legacy_serialization.serialize_keras_object(layer)
 
-    # To be replaced by new serialization_lib
-    return legacy_serialization.serialize_keras_object(layer)
+    return serialization_lib.serialize_keras_object(layer)
 
 
 @keras_export("keras.layers.deserialize")
@@ -253,6 +261,10 @@ def deserialize(config, custom_objects=None, use_legacy_format=False):
     ```
     """
     populate_deserializable_objects()
+    if not config:
+        raise ValueError(
+            f"Cannot deserialize empty config. Received: config={config}"
+        )
     if use_legacy_format:
         return legacy_serialization.deserialize_keras_object(
             config,
@@ -261,8 +273,7 @@ def deserialize(config, custom_objects=None, use_legacy_format=False):
             printable_module_name="layer",
         )
 
-    # To be replaced by new serialization_lib
-    return legacy_serialization.deserialize_keras_object(
+    return serialization_lib.deserialize_keras_object(
         config,
         module_objects=LOCAL.ALL_OBJECTS,
         custom_objects=custom_objects,

@@ -25,7 +25,7 @@ from keras.engine import functional
 from keras.engine import input_layer
 from keras.engine import training
 from keras.engine import training_utils
-from keras.saving.legacy import serialization
+from keras.saving import serialization_lib
 from keras.saving.legacy.saved_model import model_serialization
 from keras.utils import generic_utils
 from keras.utils import layer_utils
@@ -34,7 +34,6 @@ from keras.utils import tf_utils
 from keras.utils import traceback_utils
 
 # isort: off
-from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util.tf_export import keras_export
 
 SINGLE_LAYER_OUTPUT_ERROR_MSG = (
@@ -53,18 +52,11 @@ class Sequential(functional.Functional):
     Examples:
 
     ```python
-    # Optionally, the first layer can receive an `input_shape` argument:
-    model = tf.keras.Sequential()
-    model.add(tf.keras.layers.Dense(8, input_shape=(16,)))
-    # Afterwards, we do automatic shape inference:
-    model.add(tf.keras.layers.Dense(4))
-
-    # This is identical to the following:
     model = tf.keras.Sequential()
     model.add(tf.keras.Input(shape=(16,)))
     model.add(tf.keras.layers.Dense(8))
 
-    # Note that you can also omit the `input_shape` argument.
+    # Note that you can also omit the initial `Input`.
     # In that case the model doesn't have any weights until the first call
     # to a training/evaluation method (since it isn't yet built):
     model = tf.keras.Sequential()
@@ -72,13 +64,13 @@ class Sequential(functional.Functional):
     model.add(tf.keras.layers.Dense(4))
     # model.weights not created yet
 
-    # Whereas if you specify the input shape, the model gets built
+    # Whereas if you specify an `Input`, the model gets built
     # continuously as you are adding layers:
     model = tf.keras.Sequential()
-    model.add(tf.keras.layers.Dense(8, input_shape=(16,)))
+    model.add(tf.keras.Input(shape=(16,)))
     model.add(tf.keras.layers.Dense(4))
     len(model.weights)
-    # Returns "4"
+    # Returns "2"
 
     # When using the delayed-build pattern (no input shape specified), you can
     # choose to manually build your model by calling
@@ -394,13 +386,6 @@ class Sequential(functional.Functional):
                 self._build_input_shape = tf.nest.map_structure(
                     _get_shape_tuple, inputs
                 )
-                if tf.__internal__.tf2.enabled():
-                    logging.warning(
-                        "Layers in a Sequential model should only have a "
-                        f"single input tensor. Received: inputs={inputs}. "
-                        "Consider rewriting this model with the Functional "
-                        "API."
-                    )
             else:
                 self._build_graph_network_for_inferred_shape(
                     inputs.shape, inputs.dtype
@@ -454,7 +439,9 @@ class Sequential(functional.Functional):
             # filtered out of `self.layers`). Note that
             # `self._self_tracked_trackables` is managed by the tracking
             # infrastructure and should not be used.
-            layer_configs.append(serialization.serialize_keras_object(layer))
+            layer_configs.append(
+                serialization_lib.serialize_keras_object(layer)
+            )
         config = training.Model.get_config(self)
         config["name"] = self.name
         config["layers"] = copy.deepcopy(layer_configs)
@@ -473,8 +460,11 @@ class Sequential(functional.Functional):
             layer_configs = config
         model = cls(name=name)
         for layer_config in layer_configs:
+            use_legacy_format = "module" not in layer_config
             layer = layer_module.deserialize(
-                layer_config, custom_objects=custom_objects
+                layer_config,
+                custom_objects=custom_objects,
+                use_legacy_format=use_legacy_format,
             )
             model.add(layer)
 

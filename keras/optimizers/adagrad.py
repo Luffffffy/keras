@@ -26,7 +26,10 @@ from tensorflow.python.util.tf_export import keras_export
 
 @register_keras_serializable()
 @keras_export(
-    "keras.optimizers.experimental.Adagrad", "keras.optimizers.Adagrad", v1=[]
+    "keras.optimizers.experimental.Adagrad",
+    "keras.optimizers.Adagrad",
+    "keras.dtensor.experimental.optimizers.Adagrad",
+    v1=[],
 )
 class Adagrad(optimizer.Optimizer):
     r"""Optimizer that implements the Adagrad algorithm.
@@ -37,22 +40,22 @@ class Adagrad(optimizer.Optimizer):
     the smaller the updates.
 
     Args:
-      learning_rate: Initial value for the learning rate:
-        either a floating point value,
-        or a `tf.keras.optimizers.schedules.LearningRateSchedule` instance.
-        Defaults to 0.001.
-        Note that `Adagrad` tends to benefit from higher initial learning rate
-        values compared to other optimizers.
-        To match the exact form in the original paper, use 1.0.
-      initial_accumulator_value: Floating point value.
-        Starting value for the accumulators (per-parameter momentum values).
-        Must be non-negative.
-      epsilon: Small floating point value used to maintain numerical stability.
-      {{base_optimizer_keyword_args}}
+        learning_rate: Initial value for the learning rate:
+            either a floating point value,
+            or a `tf.keras.optimizers.schedules.LearningRateSchedule` instance.
+            Defaults to 0.001. Note that `Adagrad` tends to benefit from higher
+            initial learning rate values compared to other optimizers. To match
+            the exact form in the original paper, use 1.0.
+        initial_accumulator_value: Floating point value.
+            Starting value for the accumulators (per-parameter momentum values).
+            Must be non-negative.
+        epsilon: Small floating point value used to maintain numerical
+            stability.
+        {{base_optimizer_keyword_args}}
 
     Reference:
-      - [Duchi et al., 2011](
-        http://www.jmlr.org/papers/volume12/duchi11a/duchi11a.pdf).
+        - [Duchi et al., 2011](
+            http://www.jmlr.org/papers/volume12/duchi11a/duchi11a.pdf).
     """
 
     def __init__(

@@ -35,6 +35,20 @@ from tensorflow.python.util.tf_export import keras_export
 PLAIN_TYPES = (str, int, float, bool)
 SHARED_OBJECTS = threading.local()
 SAFE_MODE = threading.local()
+# TODO(nkovela): Debug serialization of decorated functions inside lambdas
+# to allow for serialization of custom_gradient.
+NON_SERIALIZABLE_CLASS_MODULES = ("tensorflow.python.ops.custom_gradient",)
+
+# List of Keras modules with built-in string representations for Keras defaults
+BUILTIN_MODULES = (
+    "activations",
+    "constraints",
+    "initializers",
+    "losses",
+    "metrics",
+    "optimizers",
+    "regularizers",
+)
 
 
 class Config:
@@ -91,6 +105,8 @@ def get_shared_object(obj_id):
 
 def record_object_after_serialization(obj, config):
     """Call after serializing an object, to keep track of its config."""
+    if config["module"] == "__main__":
+        config["module"] = None  # Ensures module is None when no module found
     if not getattr(SHARED_OBJECTS, "enabled", False):
         return  # Not in a sharing scope
     obj_id = int(id(obj))
@@ -109,6 +125,9 @@ def record_object_after_deserialization(obj, obj_id):
     SHARED_OBJECTS.id_to_obj_map[obj_id] = obj
 
 
+@keras_export(
+    "keras.saving.serialize_keras_object", "keras.utils.serialize_keras_object"
+)
 def serialize_keras_object(obj):
     """Retrieve the config dict by serializing the Keras object.
 
@@ -132,11 +151,13 @@ def serialize_keras_object(obj):
 
     if obj is None:
         return obj
+
     if isinstance(obj, PLAIN_TYPES):
         return obj
 
     if isinstance(obj, (list, tuple)):
-        return [serialize_keras_object(x) for x in obj]
+        config_arr = [serialize_keras_object(x) for x in obj]
+        return tuple(config_arr) if isinstance(obj, tuple) else config_arr
     if isinstance(obj, dict):
         return serialize_dict(obj)
 
@@ -147,7 +168,7 @@ def serialize_keras_object(obj):
             "config": {"value": obj.decode("utf-8")},
         }
     if isinstance(obj, tf.TensorShape):
-        return obj.as_list()
+        return obj.as_list() if obj._dims is not None else None
     if isinstance(obj, tf.Tensor):
         return {
             "class_name": "__tensor__",
@@ -157,7 +178,7 @@ def serialize_keras_object(obj):
             },
         }
     if type(obj).__module__ == np.__name__:
-        if isinstance(obj, np.ndarray):
+        if isinstance(obj, np.ndarray) and obj.ndim > 0:
             return {
                 "class_name": "__numpy__",
                 "config": {
@@ -170,6 +191,8 @@ def serialize_keras_object(obj):
             return obj.item()
     if isinstance(obj, tf.DType):
         return obj.name
+    if isinstance(obj, tf.compat.v1.Dimension):
+        return obj.value
     if isinstance(obj, types.FunctionType) and obj.__name__ == "<lambda>":
         warnings.warn(
             "The object being serialized includes a `lambda`. This is unsafe. "
@@ -197,46 +220,76 @@ def serialize_keras_object(obj):
                 ts_config,
             )
         )
+        spec_name = obj.__class__.__name__
+        registered_name = None
+        if hasattr(obj, "_tf_extension_type_fields"):
+            # Special casing for ExtensionType
+            ts_config = tf.experimental.extension_type.as_dict(obj)
+            ts_config = serialize_dict(ts_config)
+            registered_name = object_registration.get_registered_name(
+                obj.__class__
+            )
         return {
             "class_name": "__typespec__",
-            "spec_name": obj.__class__.__name__,
+            "spec_name": spec_name,
             "module": obj.__class__.__module__,
             "config": ts_config,
-            "registered_name": None,
+            "registered_name": registered_name,
         }
 
-    # This gets the `keras.*` exported name, such as "keras.optimizers.Adam".
-    keras_api_name = tf_export.get_canonical_name_for_symbol(
-        obj.__class__, api_name="keras"
+    inner_config = _get_class_or_fn_config(obj)
+    config_with_public_class = serialize_with_public_class(
+        obj.__class__, inner_config
     )
-    if keras_api_name is None:
-        # Any custom object or otherwise non-exported object
-        if isinstance(obj, types.FunctionType):
-            module = obj.__module__
-        else:
-            module = obj.__class__.__module__
-        class_name = obj.__class__.__name__
-        if module == "builtins":
-            registered_name = None
-        else:
-            if isinstance(obj, types.FunctionType):
-                registered_name = object_registration.get_registered_name(obj)
-            else:
-                registered_name = object_registration.get_registered_name(
-                    obj.__class__
-                )
+
+    # TODO(nkovela): Add TF ops dispatch handler serialization for
+    # ops.EagerTensor that contains nested numpy array.
+    # Target: NetworkConstructionTest.test_constant_initializer_with_numpy
+    if isinstance(inner_config, str) and inner_config == "op_dispatch_handler":
+        return obj
+
+    if config_with_public_class is not None:
+
+        # Special case for non-serializable class modules
+        if any(
+            mod in config_with_public_class["module"]
+            for mod in NON_SERIALIZABLE_CLASS_MODULES
+        ):
+            return obj
+
+        get_build_and_compile_config(obj, config_with_public_class)
+        record_object_after_serialization(obj, config_with_public_class)
+        return config_with_public_class
+
+    # Any custom object or otherwise non-exported object
+    if isinstance(obj, types.FunctionType):
+        module = obj.__module__
     else:
-        # A publicly-exported Keras object
-        parts = keras_api_name.split(".")
-        module = ".".join(parts[:-1])
-        class_name = parts[-1]
+        module = obj.__class__.__module__
+    class_name = obj.__class__.__name__
+
+    if module == "builtins":
         registered_name = None
+    else:
+        if isinstance(obj, types.FunctionType):
+            registered_name = object_registration.get_registered_name(obj)
+        else:
+            registered_name = object_registration.get_registered_name(
+                obj.__class__
+            )
+
     config = {
         "module": module,
         "class_name": class_name,
-        "config": _get_class_or_fn_config(obj),
+        "config": inner_config,
         "registered_name": registered_name,
     }
+    get_build_and_compile_config(obj, config)
+    record_object_after_serialization(obj, config)
+    return config
+
+
+def get_build_and_compile_config(obj, config):
     if hasattr(obj, "get_build_config"):
         build_config = obj.get_build_config()
         if build_config is not None:
@@ -245,8 +298,81 @@ def serialize_keras_object(obj):
         compile_config = obj.get_compile_config()
         if compile_config is not None:
             config["compile_config"] = serialize_dict(compile_config)
-    record_object_after_serialization(obj, config)
-    return config
+    return
+
+
+def serialize_with_public_class(cls, inner_config=None):
+    """Serializes classes from public Keras API or object registration.
+
+    Called to check and retrieve the config of any class that has a public
+    Keras API or has been registered as serializable via
+    `keras.saving.register_keras_serializable()`.
+    """
+    # This gets the `keras.*` exported name, such as "keras.optimizers.Adam".
+    keras_api_name = tf_export.get_canonical_name_for_symbol(
+        cls, api_name="keras"
+    )
+
+    # Case of custom or unknown class object
+    if keras_api_name is None:
+        registered_name = object_registration.get_registered_name(cls)
+        if registered_name is None:
+            return None
+
+        # Return custom object config with corresponding registration name
+        return {
+            "module": cls.__module__,
+            "class_name": cls.__name__,
+            "config": inner_config,
+            "registered_name": registered_name,
+        }
+
+    # Split the canonical Keras API name into a Keras module and class name.
+    parts = keras_api_name.split(".")
+    return {
+        "module": ".".join(parts[:-1]),
+        "class_name": parts[-1],
+        "config": inner_config,
+        "registered_name": None,
+    }
+
+
+def serialize_with_public_fn(fn, config, fn_module_name=None):
+    """Serializes functions from public Keras API or object registration.
+
+    Called to check and retrieve the config of any function that has a public
+    Keras API or has been registered as serializable via
+    `keras.saving.register_keras_serializable()`. If function's module name is
+    already known, returns corresponding config.
+    """
+    if fn_module_name:
+        return {
+            "module": fn_module_name,
+            "class_name": "function",
+            "config": config,
+            "registered_name": config,
+        }
+    keras_api_name = tf_export.get_canonical_name_for_symbol(
+        fn, api_name="keras"
+    )
+    if keras_api_name:
+        parts = keras_api_name.split(".")
+        return {
+            "module": ".".join(parts[:-1]),
+            "class_name": "function",
+            "config": config,
+            "registered_name": config,
+        }
+    else:
+        registered_name = object_registration.get_registered_name(fn)
+        if not registered_name and not fn.__module__ == "builtins":
+            return None
+        return {
+            "module": fn.__module__,
+            "class_name": "function",
+            "config": config,
+            "registered_name": registered_name,
+        }
 
 
 def _get_class_or_fn_config(obj):
@@ -263,6 +389,8 @@ def _get_class_or_fn_config(obj):
                 f"a dict. It returned: {config}"
             )
         return serialize_dict(config)
+    elif hasattr(obj, "__name__"):
+        return object_registration.get_registered_name(obj)
     else:
         raise TypeError(
             f"Cannot serialize object {obj} of type {type(obj)}. "
@@ -275,6 +403,10 @@ def serialize_dict(obj):
     return {key: serialize_keras_object(value) for key, value in obj.items()}
 
 
+@keras_export(
+    "keras.saving.deserialize_keras_object",
+    "keras.utils.deserialize_keras_object",
+)
 def deserialize_keras_object(
     config, custom_objects=None, safe_mode=True, **kwargs
 ):
@@ -294,10 +426,10 @@ def deserialize_keras_object(
       "keras.engine.compile_utils". Built-in Keras classes
       expect to have prefix `keras`.
     - `registered_name`: String. The key the class is registered under via
-      `keras.utils.register_keras_serializable(package, name)` API. The key has
+      `keras.saving.register_keras_serializable(package, name)` API. The key has
       the format of '{package}>{name}', where `package` and `name` are the
       arguments passed to `register_keras_serializable()`. If `name` is not
-      provided, it defaults to the class name. If `registered_name` successfully
+      provided, it uses the class name. If `registered_name` successfully
       resolves to a class (that was registered), the `class_name` and `config`
       values in the dict will not be used. `registered_name` is only used for
       non-built-in classes.
@@ -346,7 +478,7 @@ def deserialize_keras_object(
     loss:
 
     ```python
-    @keras.utils.register_keras_serializable(package='my_package')
+    @keras.saving.register_keras_serializable(package='my_package')
     class ModifiedMeanSquaredError(keras.losses.MeanSquaredError):
       ...
 
@@ -370,7 +502,7 @@ def deserialize_keras_object(
         safe_mode: Boolean, whether to disallow unsafe `lambda` deserialization.
             When `safe_mode=False`, loading an object has the potential to
             trigger arbitrary code execution. This argument is only
-            applicable to the Keras v3 model format. Defaults to True.
+            applicable to the Keras v3 model format. Defaults to `True`.
 
     Returns:
       The object described by the `config` dictionary.
@@ -381,23 +513,38 @@ def deserialize_keras_object(
 
     module_objects = kwargs.pop("module_objects", None)
     custom_objects = custom_objects or {}
+    tlco = object_registration._THREAD_LOCAL_CUSTOM_OBJECTS.__dict__
+    gco = object_registration._GLOBAL_CUSTOM_OBJECTS
+    custom_objects = {**custom_objects, **tlco, **gco}
+
+    # Optional deprecated argument for legacy deserialization call
+    printable_module_name = kwargs.pop("printable_module_name", "object")
+    if kwargs:
+        raise ValueError(
+            "The following argument(s) are not supported: "
+            f"{list(kwargs.keys())}"
+        )
 
     # Fall back to legacy deserialization for all TF1 users or if
     # wrapped by in_tf_saved_model_scope() to explicitly use legacy
     # saved_model logic.
     if not tf.__internal__.tf2.enabled() or in_tf_saved_model_scope():
         return legacy_serialization.deserialize_keras_object(
-            config, module_objects, custom_objects
+            config, module_objects, custom_objects, printable_module_name
         )
 
     if config is None:
         return None
-    if isinstance(config, PLAIN_TYPES):
-        if isinstance(config, str) and custom_objects.get(config) is not None:
-            # This is to deserialize plain functions which are serialized as
-            # string names by legacy saving formats.
-            return custom_objects[config]
-        return config
+
+    if (
+        isinstance(config, str)
+        and custom_objects
+        and custom_objects.get(config) is not None
+    ):
+        # This is to deserialize plain functions which are serialized as
+        # string names by legacy saving formats.
+        return custom_objects[config]
+
     if isinstance(config, (list, tuple)):
         return [
             deserialize_keras_object(
@@ -405,6 +552,69 @@ def deserialize_keras_object(
             )
             for x in config
         ]
+
+    if module_objects is not None:
+        inner_config, fn_module_name, has_custom_object = None, None, False
+        if isinstance(config, dict):
+            if "config" in config:
+                inner_config = config["config"]
+            if "class_name" not in config:
+                raise ValueError(
+                    f"Unknown `config` as a `dict`, config={config}"
+                )
+
+            # Check case where config is function or class and in custom objects
+            if custom_objects and (
+                config["class_name"] in custom_objects
+                or config.get("registered_name") in custom_objects
+                or (
+                    isinstance(inner_config, str)
+                    and inner_config in custom_objects
+                )
+            ):
+                has_custom_object = True
+
+            # Case where config is function but not in custom objects
+            elif config["class_name"] == "function":
+                fn_module_name = config["module"]
+                if fn_module_name == "builtins":
+                    config = config["config"]
+                else:
+                    config = config["registered_name"]
+
+            # Case where config is class but not in custom objects
+            else:
+                if config.get("module", "_") is None:
+                    raise TypeError(
+                        "Cannot deserialize object of type "
+                        f"`{config['class_name']}`. If "
+                        f"`{config['class_name']}` is a custom class, please "
+                        "register it using the "
+                        "`@keras.saving.register_keras_serializable()` "
+                        "decorator."
+                    )
+                config = config["class_name"]
+        if not has_custom_object:
+            # Return if not found in either module objects or custom objects
+            if config not in module_objects:
+                # Object has already been deserialized
+                return config
+            if isinstance(module_objects[config], types.FunctionType):
+                return deserialize_keras_object(
+                    serialize_with_public_fn(
+                        module_objects[config], config, fn_module_name
+                    ),
+                    custom_objects=custom_objects,
+                )
+            return deserialize_keras_object(
+                serialize_with_public_class(
+                    module_objects[config], inner_config=inner_config
+                ),
+                custom_objects=custom_objects,
+            )
+
+    if isinstance(config, PLAIN_TYPES):
+        return config
     if not isinstance(config, dict):
         raise TypeError(f"Could not parse config: {config}")
 
@@ -417,7 +627,8 @@ def deserialize_keras_object(
         }
 
     class_name = config["class_name"]
-    inner_config = config["config"]
+    inner_config = config["config"] or {}
+    custom_objects = custom_objects or {}
 
     # Special cases:
     if class_name == "__tensor__":
@@ -436,8 +647,9 @@ def deserialize_keras_object(
                 "the loading function in order to allow `lambda` loading."
             )
         return generic_utils.func_load(inner_config["value"])
+
     if config["class_name"] == "__typespec__":
-        obj = _retrieve_class_or_fn(
+        cls = _retrieve_class_or_fn(
             config["spec_name"],
             config["registered_name"],
             config["module"],
@@ -445,6 +657,20 @@ def deserialize_keras_object(
             full_config=config,
             custom_objects=custom_objects,
         )
+
+        # Special casing for ExtensionType.Spec
+        if hasattr(cls, "_tf_extension_type_fields"):
+            inner_config = {
+                key: deserialize_keras_object(
+                    value, custom_objects=custom_objects, safe_mode=safe_mode
+                )
+                for key, value in inner_config.items()
+            }  # Deserialization of dict created by ExtensionType.as_dict()
+            return cls(**inner_config)  # Instantiate ExtensionType.Spec
+
+        if config["registered_name"] is not None:
+            return cls.from_config(inner_config)
+
         # Conversion to TensorShape and tf.DType
         inner_config = map(
             lambda x: tf.TensorShape(x)
@@ -452,10 +678,7 @@ def deserialize_keras_object(
             else (getattr(tf, x) if hasattr(tf.dtypes, str(x)) else x),
             inner_config,
         )
-        return obj._deserialize(tuple(inner_config))
-    # TODO(fchollet): support for TypeSpec, CompositeTensor, tf.Dtype
-    # TODO(fchollet): consider special-casing tuples (which are currently
-    # deserialized as lists).
+        return cls._deserialize(tuple(inner_config))
 
     # Below: classes and functions.
     module = config.get("module", None)
@@ -487,6 +710,9 @@ def deserialize_keras_object(
         full_config=config,
         custom_objects=custom_objects,
     )
+
+    if isinstance(cls, types.FunctionType):
+        return cls
     if not hasattr(cls, "from_config"):
         raise TypeError(
             f"Unable to reconstruct an instance of '{class_name}' because "
@@ -518,10 +744,15 @@ def _retrieve_class_or_fn(
     name, registered_name, module, obj_type, full_config, custom_objects=None
 ):
     # If there is a custom object registered via
-    # `register_keras_serializable`, that takes precedence.
-    custom_obj = object_registration.get_registered_object(
-        registered_name, custom_objects=custom_objects
-    )
+    # `register_keras_serializable()`, that takes precedence.
+    if obj_type == "function":
+        custom_obj = object_registration.get_registered_object(
+            name, custom_objects=custom_objects
+        )
+    else:
+        custom_obj = object_registration.get_registered_object(
+            registered_name, custom_objects=custom_objects
+        )
     if custom_obj is not None:
         return custom_obj
 
@@ -531,9 +762,37 @@ def _retrieve_class_or_fn(
         # module name might not match the package structure
         # (e.g. experimental symbols).
         if module == "keras" or module.startswith("keras."):
-            obj = tf_export.get_symbol_from_name(module + "." + name)
+            api_name = module + "." + name
+
+            # Legacy internal APIs are stored in TF API naming dict
+            # with `compat.v1` prefix
+            if "__internal__.legacy" in api_name:
+                api_name = "compat.v1." + api_name
+
+            obj = tf_export.get_symbol_from_name(api_name)
             if obj is not None:
                 return obj
+
+        # Configs of Keras built-in functions do not contain identifying
+        # information other than their name (e.g. 'acc' or 'tanh'). This special
+        # case searches the Keras modules that contain built-ins to retrieve
+        # the corresponding function from the identifying string.
+        if obj_type == "function" and module == "builtins":
+            for mod in BUILTIN_MODULES:
+                obj = tf_export.get_symbol_from_name(
+                    "keras." + mod + "." + name
+                )
+                if obj is not None:
+                    return obj
+
+            # Retrieval of registered custom function in a package
+            filtered_dict = {
+                k: v
+                for k, v in custom_objects.items()
+                if k.endswith(full_config["config"])
+            }
+            if filtered_dict:
+                return next(iter(filtered_dict.values()))
 
         # Otherwise, attempt to retrieve the class object given the `module`
         # and `class_name`. Import the module, find the class.
@@ -546,12 +805,28 @@ def _retrieve_class_or_fn(
                 f"Full object config: {full_config}"
             )
         obj = vars(mod).get(name, None)
+
+        if obj is None:
+            # Special case for keras.metrics.metrics
+            if registered_name is not None:
+                obj = vars(mod).get(registered_name, None)
+
+            # Support for `__qualname__`
+            if name.count(".") == 1:
+                outer_name, inner_name = name.split(".")
+                outer_obj = vars(mod).get(outer_name, None)
+                obj = (
+                    getattr(outer_obj, inner_name, None)
+                    if outer_obj is not None
+                    else None
+                )
+
         if obj is not None:
             return obj
 
     raise TypeError(
         f"Could not locate {obj_type} '{name}'. "
         "Make sure custom classes are decorated with "
-        "`@keras.utils.register_keras_serializable`. "
+        "`@keras.saving.register_keras_serializable()`. "
         f"Full object config: {full_config}"
     )

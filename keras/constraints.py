@@ -16,12 +16,14 @@
 
 """Constraints: functions that impose constraints on weight values."""
 
+import warnings
+
 import tensorflow.compat.v2 as tf
 
 from keras import backend
 from keras.saving.legacy import serialization as legacy_serialization
-from keras.saving.legacy.serialization import deserialize_keras_object
-from keras.saving.legacy.serialization import serialize_keras_object
+from keras.saving.serialization_lib import deserialize_keras_object
+from keras.saving.serialization_lib import serialize_keras_object
 
 # isort: off
 from tensorflow.python.util.tf_export import keras_export
@@ -357,6 +359,15 @@ unitnorm = unit_norm
 
 @keras_export("keras.constraints.serialize")
 def serialize(constraint, use_legacy_format=False):
+    if constraint is None:
+        return None
+    if not isinstance(constraint, Constraint):
+        warnings.warn(
+            "The `keras.constraints.serialize()` API should only be used for "
+            "objects of type `keras.constraints.Constraint`. Found an instance "
+            f"of type {type(constraint)}, which may lead to improper "
+            "serialization."
+        )
     if use_legacy_format:
         return legacy_serialization.serialize_keras_object(constraint)
     return serialize_keras_object(constraint)
@@ -389,7 +400,7 @@ def get(identifier):
         return deserialize(identifier, use_legacy_format=use_legacy_format)
     elif isinstance(identifier, str):
         config = {"class_name": str(identifier), "config": {}}
-        return deserialize(config)
+        return get(config)
     elif callable(identifier):
         return identifier
     else:

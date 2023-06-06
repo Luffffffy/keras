@@ -24,6 +24,7 @@ from keras.layers.rnn import gru
 from keras.layers.rnn import gru_v1
 from keras.layers.rnn import lstm
 from keras.layers.rnn import lstm_v1
+from keras.metrics import Mean
 from keras.testing_infra import test_combinations
 
 
@@ -66,6 +67,9 @@ class LayerSerializationTest(parameterized.TestCase, tf.test.TestCase):
         self.assertEqual(new_layer.units, 3)
 
     def test_implicit_serialize_deserialize_fails_without_object(self):
+        # After discussion (rchao, nkovela) decided to exclude from new saving
+        if tf.__internal__.tf2.enabled():
+            self.skipTest("Test excluded from new saving format.")
         layer = keras.layers.Dense(
             SerializableInt(3),
             activation="relu",
@@ -187,6 +191,11 @@ class LayerSerializationTest(parameterized.TestCase, tf.test.TestCase):
         else:
             self.assertIsInstance(new_layer, gru_v1.GRU)
             self.assertNotIsInstance(new_layer, gru.GRU)
+
+    def test_serialize_metric_throws_error(self):
+        metric = Mean()
+        with self.assertRaisesRegex(ValueError, "since it is a metric."):
+            _ = keras.layers.serialize(metric)
 
 
 if __name__ == "__main__":

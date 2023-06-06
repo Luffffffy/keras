@@ -20,6 +20,7 @@ For more examples see the base class `tf.keras.optimizers.Optimizer`.
 # Imports needed for deserialization.
 
 import platform
+import warnings
 
 import tensorflow.compat.v2 as tf
 from absl import logging
@@ -32,6 +33,7 @@ from keras.optimizers import adam
 from keras.optimizers import adamax
 from keras.optimizers import adamw
 from keras.optimizers import ftrl
+from keras.optimizers import lion
 from keras.optimizers import nadam
 from keras.optimizers import optimizer as base_optimizer
 from keras.optimizers import rmsprop
@@ -60,11 +62,13 @@ from keras.optimizers.optimizer_v1 import Optimizer
 from keras.optimizers.optimizer_v1 import TFOptimizer
 from keras.optimizers.schedules import learning_rate_schedule
 from keras.saving.legacy import serialization as legacy_serialization
-from keras.saving.legacy.serialization import deserialize_keras_object
-from keras.saving.legacy.serialization import serialize_keras_object
+from keras.saving.serialization_lib import deserialize_keras_object
+from keras.saving.serialization_lib import serialize_keras_object
 
 # isort: off
 from tensorflow.python.util.tf_export import keras_export
+
+# pylint: disable=line-too-long
 
 
 @keras_export("keras.optimizers.serialize")
@@ -75,16 +79,30 @@ def serialize(optimizer, use_legacy_format=False):
     `Optimizer` instance again.
 
     >>> tf.keras.optimizers.serialize(tf.keras.optimizers.legacy.SGD())
-    {'class_name': 'SGD', 'config': {'name': 'SGD', 'learning_rate': 0.01,
-                                     'decay': 0.0, 'momentum': 0.0,
-                                     'nesterov': False}}
-
+    {'module': 'keras.optimizers.legacy', 'class_name': 'SGD', 'config': {'name': 'SGD', 'learning_rate': 0.01, 'decay': 0.0, 'momentum': 0.0, 'nesterov': False}, 'registered_name': None}"""  # noqa: E501
+    """
     Args:
       optimizer: An `Optimizer` instance to serialize.
 
     Returns:
       Python dict which contains the configuration of the input optimizer.
     """
+    if optimizer is None:
+        return None
+    if not isinstance(
+        optimizer,
+        (
+            base_optimizer.Optimizer,
+            Optimizer,
+            base_optimizer_legacy.OptimizerV2,
+        ),
+    ):
+        warnings.warn(
+            "The `keras.optimizers.serialize()` API should only be used for "
+            "objects of type `keras.optimizers.Optimizer`. Found an instance "
+            f"of type {type(optimizer)}, which may lead to improper "
+            "serialization."
+        )
     if use_legacy_format:
         return legacy_serialization.serialize_keras_object(optimizer)
     return serialize_keras_object(optimizer)
@@ -196,14 +214,14 @@ def deserialize(config, custom_objects=None, use_legacy_format=False, **kwargs):
 def convert_to_legacy_optimizer(optimizer):
     """Convert experimental optimizer to legacy optimizer.
 
-    This function takes in a `tf.keras.optimizers.experimental.Optimizer`
+    This function takes in a `keras.optimizers.Optimizer`
     instance and converts it to the corresponding
-    `tf.keras.optimizers.legacy.Optimizer` instance.
-    For example, `tf.keras.optimizers.experimental.Adam(...)` to
-    `tf.keras.optimizers.legacy.Adam(...)`.
+    `keras.optimizers.legacy.Optimizer` instance.
+    For example, `keras.optimizers.Adam(...)` to
+    `keras.optimizers.legacy.Adam(...)`.
 
     Args:
-        optimizer: An instance of `tf.keras.optimizers.experimental.Optimizer`.
+        optimizer: An instance of `keras.optimizers.Optimizer`.
     """
     # loss_scale_optimizer has a direct dependency of optimizer, import here
     # rather than top to avoid the cyclic dependency.
@@ -310,7 +328,7 @@ def get(identifier, **kwargs):
         )
     elif isinstance(identifier, str):
         config = {"class_name": str(identifier), "config": {}}
-        return deserialize(
+        return get(
             config,
             use_legacy_optimizer=use_legacy_optimizer,
         )

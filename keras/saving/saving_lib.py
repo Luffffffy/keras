@@ -42,6 +42,10 @@ try:
 except ImportError:
     h5py = None
 
+keras_saving_gauge = tf.__internal__.monitoring.BoolGauge(
+    "/tensorflow/api/keras/saving", "keras saving usage", "method"
+)
+
 # isort: off
 
 _CONFIG_FILENAME = "config.json"
@@ -51,7 +55,7 @@ _ASSETS_DIRNAME = "assets"
 
 # A temporary flag to enable the new idempotent saving framework.
 _SAVING_V3_ENABLED = threading.local()
-_SAVING_V3_ENABLED.value = False
+_SAVING_V3_ENABLED.value = True
 
 ATTR_SKIPLIST = frozenset(
     {
@@ -127,6 +131,10 @@ def save_model(model, filepath, weights_format="h5"):
     container (list, tuple, or dict), and the container is referenced via a
     layer attribute.
     """
+
+    # API usage tracking for Keras V3 saving
+    keras_saving_gauge.get_cell("save_model_v3").set(True)
+
     filepath = str(filepath)
     if not filepath.endswith(".keras"):
         raise ValueError(
@@ -157,12 +165,10 @@ def save_model(model, filepath, weights_format="h5"):
         }
     )
     # TODO(rameshsampath): Need a better logic for local vs remote path
-    if re.match(r"^(/cns|/cfs|.*://).*$", filepath):
+    if is_remote_path(filepath):
         # Remote path. Zip to local drive and copy to remote
-        is_remote_path = True
-        zip_filepath = os.path.join(_get_temp_dir(), "tmp_model.keras")
+        zip_filepath = os.path.join(get_temp_dir(), "tmp_model.keras")
     else:
-        is_remote_path = False
         zip_filepath = filepath
     try:
         with zipfile.ZipFile(zip_filepath, "w") as zf:
@@ -199,7 +205,7 @@ def save_model(model, filepath, weights_format="h5"):
             weights_store.close()
             asset_store.close()
 
-        if is_remote_path:
+        if is_remote_path(filepath):
             # Using tf.io.gfile context manager doesn't close zip file when
             # writing to GCS. Hence writing to local and copying to filepath.
             tf.io.gfile.copy(zip_filepath, filepath, overwrite=True)
@@ -288,6 +294,10 @@ def save_weights_only(model, filepath):
     """
     # TODO: if h5 filepath is remote, create the file in a temporary directory
     # then upload it
+
+    # API usage tracking for Keras V3 saving
+    keras_saving_gauge.get_cell("save_weights_v3").set(True)
+
     filepath = str(filepath)
     if not filepath.endswith(".weights.h5"):
         raise ValueError(
@@ -337,6 +347,12 @@ def load_weights_only(model, filepath, skip_mismatch=False):
         archive.close()
 
 
+def is_remote_path(filepath):
+    if re.match(r"^(/cns|/cfs|/gcs|.*://).*$", str(filepath)):
+        return True
+    return False
+
+
 def _write_to_zip_recursively(zipfile_to_save, system_path, zip_path):
     if not tf.io.gfile.isdir(system_path):
         zipfile_to_save.write(system_path, zip_path)
@@ -368,11 +384,10 @@ def _save_state(
     if id(trackable) in visited_trackables:
         return
 
-    # TODO(fchollet): better name?
-    if hasattr(trackable, "_save_own_variables") and weights_store:
-        trackable._save_own_variables(weights_store.make(inner_path))
-    if hasattr(trackable, "_save_assets") and assets_store:
-        trackable._save_assets(assets_store.make(inner_path))
+    if hasattr(trackable, "save_own_variables") and weights_store:
+        trackable.save_own_variables(weights_store.make(inner_path))
+    if hasattr(trackable, "save_assets") and assets_store:
+        trackable.save_assets(assets_store.make(inner_path))
 
     visited_trackables.add(id(trackable))
 
@@ -407,10 +422,10 @@ def _load_state(
     if visited_trackables and id(trackable) in visited_trackables:
         return
 
-    if hasattr(trackable, "_load_own_variables") and weights_store:
+    if hasattr(trackable, "load_own_variables") and weights_store:
         if skip_mismatch:
             try:
-                trackable._load_own_variables(weights_store.get(inner_path))
+                trackable.load_own_variables(weights_store.get(inner_path))
             except Exception as e:
                 warnings.warn(
                     f"Could not load weights in object {trackable}. "
@@ -419,12 +434,12 @@ def _load_state(
                     stacklevel=2,
                 )
         else:
-            trackable._load_own_variables(weights_store.get(inner_path))
+            trackable.load_own_variables(weights_store.get(inner_path))
 
-    if hasattr(trackable, "_load_assets") and assets_store:
+    if hasattr(trackable, "load_assets") and assets_store:
         if skip_mismatch:
             try:
-                trackable._load_assets(assets_store.get(inner_path))
+                trackable.load_assets(assets_store.get(inner_path))
             except Exception as e:
                 warnings.warn(
                     f"Could not load assets in object {trackable}. "
@@ -433,7 +448,7 @@ def _load_state(
                     stacklevel=2,
                 )
         else:
-            trackable._load_assets(assets_store.get(inner_path))
+            trackable.load_assets(assets_store.get(inner_path))
 
     if visited_trackables is not None:
         visited_trackables.add(id(trackable))
@@ -533,7 +548,7 @@ class DiskIOStore:
         self.archive = archive
         self.tmp_dir = None
         if self.archive:
-            self.tmp_dir = _get_temp_dir()
+            self.tmp_dir = get_temp_dir()
             if self.mode == "r":
                 self.archive.extractall(path=self.tmp_dir)
             self.working_dir = tf.io.gfile.join(self.tmp_dir, self.root_path)
@@ -543,7 +558,7 @@ class DiskIOStore:
             if mode == "r":
                 self.working_dir = root_path
             else:
-                self.tmp_dir = _get_temp_dir()
+                self.tmp_dir = get_temp_dir()
                 self.working_dir = tf.io.gfile.join(
                     self.tmp_dir, self.root_path
                 )
@@ -668,7 +683,7 @@ class NpzIOStore:
         self.f.close()
 
 
-def _get_temp_dir():
+def get_temp_dir():
     temp_dir = tempfile.mkdtemp()
     testfile = tempfile.TemporaryFile(dir=temp_dir)
     testfile.close()
@@ -690,7 +705,7 @@ def _is_keras_trackable(obj):
 
 
 def saving_v3_enabled():
-    return getattr(_SAVING_V3_ENABLED, "value", False)
+    return getattr(_SAVING_V3_ENABLED, "value", True)
 
 
 # Some debugging utilities.
@@ -707,7 +722,6 @@ def _print_h5_file(h5_file, prefix="", action=None):
 
 
 def _print_zip_file(zipfile, action):
-    # TODO(fchollet): move to debugging logs.
     io_utils.print_msg(f"Keras model archive {action}:")
     # Same as `ZipFile.printdir()` except for using Keras' printing utility.
     io_utils.print_msg(

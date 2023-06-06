@@ -16,6 +16,7 @@
 
 import tensorflow.compat.v2 as tf
 
+from keras import backend
 from keras import constraints
 from keras import initializers
 from keras import regularizers
@@ -49,18 +50,19 @@ class GroupNormalization(Layer):
     Args:
       groups: Integer, the number of groups for Group Normalization. Can be in
         the range [1, N] where N is the input dimension. The input dimension
-        must be divisible by the number of groups. Defaults to 32.
+        must be divisible by the number of groups. Defaults to `32`.
       axis: Integer or List/Tuple. The axis or axes to normalize across.
-        Typically this is the features axis/axes. The left-out axes are
-        typically the batch axis/axes. This argument defaults to `-1`, the last
-        dimension in the input.
+        Typically, this is the features axis/axes. The left-out axes are
+        typically the batch axis/axes. `-1` is the last dimension in the
+        input. Defaults to `-1`.
       epsilon: Small float added to variance to avoid dividing by zero. Defaults
         to 1e-3
       center: If True, add offset of `beta` to normalized tensor. If False,
-        `beta` is ignored. Defaults to True.
+        `beta` is ignored. Defaults to `True`.
       scale: If True, multiply by `gamma`. If False, `gamma` is not used.
-        Defaults to True. When the next layer is linear (also e.g. `nn.relu`),
-        this can be disabled since the scaling will be done by the next layer.
+        When the next layer is linear (also e.g. `nn.relu`), this can be
+        disabled since the scaling will be done by the next layer.
+        Defaults to `True`.
       beta_initializer: Initializer for the beta weight. Defaults to zeros.
       gamma_initializer: Initializer for the gamma weight. Defaults to ones.
       beta_regularizer: Optional regularizer for the beta weight. None by
@@ -72,6 +74,12 @@ class GroupNormalization(Layer):
         default.  Input shape: Arbitrary. Use the keyword argument `input_shape`
         (tuple of integers, does not include the samples axis) when using this
         layer as the first layer in a model.  Output shape: Same shape as input.
+
+    Call arguments:
+      inputs: Input tensor (of any rank).
+      mask: The mask parameter is a tensor that indicates the weight for each
+        position in the input tensor when computing the mean and variance.
+
     Reference: - [Yuxin Wu & Kaiming He, 2018](https://arxiv.org/abs/1803.08494)
     """
 
@@ -158,13 +166,23 @@ class GroupNormalization(Layer):
 
         super().build(input_shape)
 
-    def call(self, inputs):
+    def call(self, inputs, mask=None):
         input_shape = tf.shape(inputs)
 
+        if mask is None:
+            mask = tf.ones_like(inputs)
+        else:
+            # We broadcast before we group in case the mask does not have the
+            # same shape as the input.
+            mask = tf.broadcast_to(mask, input_shape)
+
         reshaped_inputs = self._reshape_into_groups(inputs)
+        reshaped_mask = self._reshape_into_groups(mask)
 
         normalized_inputs = self._apply_normalization(
-            reshaped_inputs, input_shape
+            reshaped_inputs=reshaped_inputs,
+            input_shape=input_shape,
+            reshaped_mask=reshaped_mask,
         )
 
         return tf.reshape(normalized_inputs, input_shape)
@@ -179,14 +197,25 @@ class GroupNormalization(Layer):
         reshaped_inputs = tf.reshape(inputs, group_shape)
         return reshaped_inputs
 
-    def _apply_normalization(self, reshaped_inputs, input_shape):
+    def _apply_normalization(
+        self,
+        *,
+        reshaped_inputs,
+        reshaped_mask,
+        input_shape,
+    ):
         group_reduction_axes = list(range(1, reshaped_inputs.shape.rank))
 
-        axis = -2 if self.axis == -1 else self.axis - 1
+        axis = self.axis - 1
         group_reduction_axes.pop(axis)
 
-        mean, variance = tf.nn.moments(
-            reshaped_inputs, group_reduction_axes, keepdims=True
+        mask_weights = tf.cast(reshaped_mask, reshaped_inputs.dtype)
+
+        mean, variance = tf.nn.weighted_moments(
+            reshaped_inputs,
+            axes=group_reduction_axes,
+            frequency_weights=mask_weights,
+            keepdims=True,
         )
 
         gamma, beta = self._get_reshaped_weights(input_shape)
@@ -212,7 +241,7 @@ class GroupNormalization(Layer):
         return gamma, beta
 
     def _create_broadcast_shape(self, input_shape):
-        broadcast_shape = [1] * input_shape.shape.rank
+        broadcast_shape = [1] * backend.int_shape(input_shape)[0]
 
         broadcast_shape[self.axis] = input_shape[self.axis] // self.groups
         broadcast_shape.insert(self.axis, self.groups)

@@ -89,7 +89,7 @@ class DropoutLayersTest(test_combinations.TestCase):
         # Test that dropout mask is shared across second dim.
         self.assertAllClose(out_np[:, 0, :], out_np[:, 1, :])
 
-    def test_dropout_with_savemodel(self):
+    def test_dropout_with_saving(self):
         inputs = keras.Input(shape=(5, 10))
         layer = keras.layers.Dropout(0.5, force_generator=True)
         outputs = layer(inputs)
@@ -105,51 +105,72 @@ class DropoutLayersTest(test_combinations.TestCase):
         # Make sure the layer does dropout value when training
         self.assertNotAllClose(train, predict)
 
-        model.save(
-            os.path.join(self.get_temp_dir(), "savedmodel"), save_format="tf"
-        )
-        loaded_model = keras.models.load_model(
-            os.path.join(self.get_temp_dir(), "savedmodel")
-        )
-        predict2 = loaded_model(np.ones((20, 5, 10)))
+        with self.subTest("savedmodel"):
+            model.save(
+                os.path.join(self.get_temp_dir(), "savedmodel"),
+                save_format="tf",
+            )
+            loaded_model = keras.models.load_model(
+                os.path.join(self.get_temp_dir(), "savedmodel")
+            )
+            predict2 = loaded_model(np.ones((20, 5, 10)))
 
-        self.assertAllClose(predict, predict2)
-        # Make sure the model dropout different value after loading
-        train2 = loaded_model(np.ones((20, 5, 10)), training=True)
-        self.assertNotAllClose(train, train2)
-        self.assertIsNotNone(loaded_model.layers[1]._random_generator)
+            self.assertAllClose(predict, predict2)
+            # Make sure the model dropout different value after loading
+            train2 = loaded_model(np.ones((20, 5, 10)), training=True)
+            self.assertNotAllClose(train, train2)
+            self.assertIsNotNone(loaded_model.layers[1]._random_generator)
 
-        # Also make sure the checkpoint doesn't contain any variable from the
-        # dropout layer, to keep the backward compatibility.
-        checkpoint = tf.train.Checkpoint(model)
-        save_path = checkpoint.save(
-            os.path.join(self.get_temp_dir(), "checkpoint")
-        )
-        checkpoint_var_names = [
-            name_value_tuple[0]
-            for name_value_tuple in tf.train.list_variables(save_path)
-        ]
-        for name in checkpoint_var_names:
-            self.assertNotIn("dropout", name)
+        with self.subTest("keras_v3"):
+            if not tf.__internal__.tf2.enabled():
+                self.skipTest(
+                    "TF2 must be enabled to use the new `.keras` saving."
+                )
+            model.save(os.path.join(self.get_temp_dir(), "model.keras"))
+            loaded_model = keras.models.load_model(
+                os.path.join(self.get_temp_dir(), "model.keras")
+            )
+            predict2 = loaded_model(np.ones((20, 5, 10)))
+
+            self.assertAllClose(predict, predict2)
+            # Make sure the model dropout different value after loading
+            train2 = loaded_model(np.ones((20, 5, 10)), training=True)
+            self.assertNotAllClose(train, train2)
+            self.assertIsNotNone(loaded_model.layers[1]._random_generator)
+
+        with self.subTest("checkpoint"):
+            # Also make sure the checkpoint doesn't contain any variable from
+            # the dropout layer, to keep the backward compatibility.
+            checkpoint = tf.train.Checkpoint(model)
+            save_path = checkpoint.save(
+                os.path.join(self.get_temp_dir(), "checkpoint")
+            )
+            checkpoint_var_names = [
+                name_value_tuple[0]
+                for name_value_tuple in tf.train.list_variables(save_path)
+            ]
+            for name in checkpoint_var_names:
+                self.assertNotIn("dropout", name)
 
 
 @test_combinations.run_all_keras_modes
 class LambdaLayerTest(test_combinations.TestCase):
     def test_lambda(self):
-        test_utils.layer_test(
-            keras.layers.Lambda,
-            kwargs={"function": lambda x: x + 1},
-            input_shape=(3, 2),
-        )
+        with SafeModeScope(safe_mode=False):
+            test_utils.layer_test(
+                keras.layers.Lambda,
+                kwargs={"function": lambda x: x + 1},
+                input_shape=(3, 2),
+            )
 
-        test_utils.layer_test(
-            keras.layers.Lambda,
-            kwargs={
-                "function": lambda x, a, b: x * a + b,
-                "arguments": {"a": 0.6, "b": 0.4},
-            },
-            input_shape=(3, 2),
-        )
+            test_utils.layer_test(
+                keras.layers.Lambda,
+                kwargs={
+                    "function": lambda x, a, b: x * a + b,
+                    "arguments": {"a": 0.6, "b": 0.4},
+                },
+                input_shape=(3, 2),
+            )
 
         # test serialization with function
         def f(x):
