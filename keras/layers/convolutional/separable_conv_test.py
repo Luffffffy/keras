@@ -1,183 +1,356 @@
-# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for separable convolutional layers."""
-
 import numpy as np
-import tensorflow.compat.v2 as tf
+import pytest
 from absl.testing import parameterized
 
-import keras
-from keras.testing_infra import test_combinations
-from keras.testing_infra import test_utils
+from keras import layers
+from keras import testing
+from keras.layers.convolutional.conv_test import np_conv1d
+from keras.layers.convolutional.conv_test import np_conv2d
+from keras.layers.convolutional.depthwise_conv_test import np_depthwise_conv1d
+from keras.layers.convolutional.depthwise_conv_test import np_depthwise_conv2d
 
 
-@test_combinations.run_all_keras_modes
-class SeparableConv1DTest(test_combinations.TestCase):
-    def _run_test(self, kwargs):
-        num_samples = 2
-        stack_size = 3
-        length = 7
+class SeparableConvBasicTest(testing.TestCase, parameterized.TestCase):
+    @parameterized.parameters(
+        {
+            "depth_multiplier": 5,
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "input_shape": (3, 5, 4),
+            "output_shape": (3, 4, 5),
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2,),
+            "input_shape": (3, 4, 4),
+            "output_shape": (3, 4, 6),
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": (2,),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "input_shape": (3, 5, 4),
+            "output_shape": (3, 2, 6),
+        },
+    )
+    @pytest.mark.requires_trainable_backend
+    def test_separable_conv1d_basic(
+        self,
+        depth_multiplier,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        input_shape,
+        output_shape,
+    ):
+        self.run_layer_test(
+            layers.SeparableConv1D,
+            init_kwargs={
+                "depth_multiplier": depth_multiplier,
+                "filters": filters,
+                "kernel_size": kernel_size,
+                "strides": strides,
+                "padding": padding,
+                "data_format": data_format,
+                "dilation_rate": dilation_rate,
+            },
+            input_shape=input_shape,
+            expected_output_shape=output_shape,
+            expected_num_trainable_weights=3,
+            expected_num_non_trainable_weights=0,
+            expected_num_losses=0,
+            supports_masking=False,
+        )
 
-        with self.cached_session():
-            test_utils.layer_test(
-                keras.layers.SeparableConv1D,
-                kwargs=kwargs,
-                input_shape=(num_samples, length, stack_size),
+    @parameterized.parameters(
+        {
+            "depth_multiplier": 5,
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "input_shape": (3, 5, 5, 4),
+            "output_shape": (3, 4, 4, 5),
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 2),
+            "input_shape": (3, 4, 4, 4),
+            "output_shape": (3, 4, 4, 6),
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": (2, 2),
+            "strides": (2, 2),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": (1, 1),
+            "input_shape": (3, 5, 5, 4),
+            "output_shape": (3, 2, 2, 6),
+        },
+    )
+    @pytest.mark.requires_trainable_backend
+    def test_separable_conv2d_basic(
+        self,
+        depth_multiplier,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        input_shape,
+        output_shape,
+    ):
+        self.run_layer_test(
+            layers.SeparableConv2D,
+            init_kwargs={
+                "depth_multiplier": depth_multiplier,
+                "filters": filters,
+                "kernel_size": kernel_size,
+                "strides": strides,
+                "padding": padding,
+                "data_format": data_format,
+                "dilation_rate": dilation_rate,
+            },
+            input_shape=input_shape,
+            expected_output_shape=output_shape,
+            expected_num_trainable_weights=3,
+            expected_num_non_trainable_weights=0,
+            expected_num_losses=0,
+            supports_masking=False,
+        )
+
+    def test_bad_init_args(self):
+        # `depth_multiplier` is not positive.
+        with self.assertRaises(ValueError):
+            layers.SeparableConv1D(depth_multiplier=0, filters=1, kernel_size=1)
+
+        # `filters` is not positive.
+        with self.assertRaises(ValueError):
+            layers.SeparableConv1D(depth_multiplier=1, filters=0, kernel_size=1)
+
+        # `kernel_size` has 0.
+        with self.assertRaises(ValueError):
+            layers.SeparableConv2D(
+                depth_multiplier=2, filters=2, kernel_size=(1, 0)
             )
 
-    @parameterized.named_parameters(
-        ("padding_valid", {"padding": "valid"}),
-        ("padding_same", {"padding": "same"}),
-        ("padding_same_dilation_2", {"padding": "same", "dilation_rate": 2}),
-        ("padding_causal", {"padding": "causal"}),
-        ("strides", {"strides": 2}),
-        ("dilation_rate", {"dilation_rate": 2}),
-        ("depth_multiplier", {"depth_multiplier": 2}),
-    )
-    def test_separable_conv1d(self, kwargs):
-        kwargs["filters"] = 2
-        kwargs["kernel_size"] = 3
-        self._run_test(kwargs)
-
-    def test_separable_conv1d_regularizers(self):
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "depthwise_regularizer": "l2",
-            "pointwise_regularizer": "l2",
-            "bias_regularizer": "l2",
-            "activity_regularizer": "l2",
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.SeparableConv1D(**kwargs)
-            layer.build((None, 5, 2))
-            self.assertEqual(len(layer.losses), 3)
-            layer(keras.backend.variable(np.ones((1, 5, 2))))
-            self.assertEqual(len(layer.losses), 4)
-
-    def test_separable_conv1d_constraints(self):
-        d_constraint = lambda x: x
-        p_constraint = lambda x: x
-        b_constraint = lambda x: x
-
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "pointwise_constraint": p_constraint,
-            "depthwise_constraint": d_constraint,
-            "bias_constraint": b_constraint,
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.SeparableConv1D(**kwargs)
-            layer.build((None, 5, 2))
-            self.assertEqual(layer.depthwise_kernel.constraint, d_constraint)
-            self.assertEqual(layer.pointwise_kernel.constraint, p_constraint)
-            self.assertEqual(layer.bias.constraint, b_constraint)
-
-    def test_separable_conv1d_invalid_strides_and_dilation_rate(self):
-        kwargs = {"strides": 2, "dilation_rate": 2}
-        with self.assertRaisesRegex(
-            ValueError, r"""`strides > 1` not supported in conjunction"""
-        ):
-            keras.layers.SeparableConv1D(filters=1, kernel_size=2, **kwargs)
-
-
-@test_combinations.run_all_keras_modes
-class SeparableConv2DTest(test_combinations.TestCase):
-    def _run_test(self, kwargs):
-        num_samples = 2
-        stack_size = 3
-        num_row = 7
-        num_col = 6
-
-        with self.cached_session():
-            test_utils.layer_test(
-                keras.layers.SeparableConv2D,
-                kwargs=kwargs,
-                input_shape=(num_samples, num_row, num_col, stack_size),
+        # `strides` has 0.
+        with self.assertRaises(ValueError):
+            layers.SeparableConv2D(
+                depth_multiplier=2,
+                filters=2,
+                kernel_size=(2, 2),
+                strides=(1, 0),
             )
 
-    @parameterized.named_parameters(
-        ("padding_valid", {"padding": "valid"}),
-        ("padding_same", {"padding": "same"}),
-        ("padding_same_dilation_2", {"padding": "same", "dilation_rate": 2}),
-        ("strides", {"strides": 2}),
-        # Only runs on GPU with CUDA, channels_first is not supported on CPU.
-        # TODO(b/62340061): Support channels_first on CPU.
-        ("data_format", {"data_format": "channels_first"}),
-        ("dilation_rate", {"dilation_rate": 2}),
-        ("depth_multiplier", {"depth_multiplier": 2}),
+        # `dilation_rate > 1` while `strides > 1`.
+        with self.assertRaises(ValueError):
+            layers.SeparableConv2D(
+                depth_multiplier=2,
+                filters=2,
+                kernel_size=(2, 2),
+                strides=2,
+                dilation_rate=(2, 1),
+            )
+
+
+class SeparableConvCorrectnessTest(testing.TestCase, parameterized.TestCase):
+    @parameterized.parameters(
+        {
+            "depth_multiplier": 5,
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2,),
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": (2,),
+            "strides": (2,),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+        },
     )
-    def test_separable_conv2d(self, kwargs):
-        kwargs["filters"] = 2
-        kwargs["kernel_size"] = 3
-        if "data_format" not in kwargs or tf.test.is_gpu_available(
-            cuda_only=True
-        ):
-            self._run_test(kwargs)
+    def test_separable_conv1d(
+        self,
+        depth_multiplier,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+    ):
+        layer = layers.SeparableConv1D(
+            depth_multiplier=depth_multiplier,
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+        )
 
-    def test_separable_conv2d_regularizers(self):
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "depthwise_regularizer": "l2",
-            "pointwise_regularizer": "l2",
-            "bias_regularizer": "l2",
-            "activity_regularizer": "l2",
+        inputs = np.random.normal(size=[2, 8, 4])
+        layer.build(input_shape=inputs.shape)
+
+        depthwise_kernel_shape = layer.depthwise_kernel.shape
+        depthwise_kernel_weights = np.random.normal(size=depthwise_kernel_shape)
+        layer.depthwise_kernel.assign(depthwise_kernel_weights)
+
+        pointwise_kernel_shape = layer.pointwise_kernel.shape
+        pointwise_kernel_weights = np.random.normal(size=pointwise_kernel_shape)
+        layer.pointwise_kernel.assign(pointwise_kernel_weights)
+
+        bias_weights = np.random.normal(size=(filters,))
+        layer.bias.assign(bias_weights)
+
+        outputs = layer(inputs)
+        expected_depthwise = np_depthwise_conv1d(
+            inputs,
+            depthwise_kernel_weights,
+            np.zeros(4 * depth_multiplier),
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+        )
+        expected = np_conv1d(
+            expected_depthwise,
+            pointwise_kernel_weights,
+            bias_weights,
+            strides=1,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=1,
+            groups=1,
+        )
+
+        self.assertAllClose(outputs.shape, expected.shape)
+        self.assertAllClose(outputs, expected, rtol=1e-5, atol=1e-5)
+
+    @parameterized.parameters(
+        {
+            "depth_multiplier": 5,
+            "filters": 5,
+            "kernel_size": 2,
             "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.SeparableConv2D(**kwargs)
-            layer.build((None, 5, 5, 2))
-            self.assertEqual(len(layer.losses), 3)
-            layer(keras.backend.variable(np.ones((1, 5, 5, 2))))
-            self.assertEqual(len(layer.losses), 4)
-
-    def test_separable_conv2d_constraints(self):
-        d_constraint = lambda x: x
-        p_constraint = lambda x: x
-        b_constraint = lambda x: x
-
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
             "padding": "valid",
-            "pointwise_constraint": p_constraint,
-            "depthwise_constraint": d_constraint,
-            "bias_constraint": b_constraint,
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": 2,
             "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.SeparableConv2D(**kwargs)
-            layer.build((None, 5, 5, 2))
-            self.assertEqual(layer.depthwise_kernel.constraint, d_constraint)
-            self.assertEqual(layer.pointwise_kernel.constraint, p_constraint)
-            self.assertEqual(layer.bias.constraint, b_constraint)
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 2),
+        },
+        {
+            "depth_multiplier": 6,
+            "filters": 6,
+            "kernel_size": (2, 2),
+            "strides": (2, 2),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": (1, 1),
+        },
+    )
+    def test_separable_conv2d(
+        self,
+        depth_multiplier,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+    ):
+        layer = layers.SeparableConv2D(
+            depth_multiplier=depth_multiplier,
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+        )
 
-    def test_separable_conv2d_invalid_strides_and_dilation_rate(self):
-        kwargs = {"strides": [2, 1], "dilation_rate": [2, 1]}
-        with self.assertRaisesRegex(
-            ValueError, r"""`strides > 1` not supported in conjunction"""
-        ):
-            keras.layers.SeparableConv2D(filters=1, kernel_size=2, **kwargs)
+        inputs = np.random.normal(size=[2, 8, 8, 4])
+        layer.build(input_shape=inputs.shape)
 
+        depthwise_kernel_shape = layer.depthwise_kernel.shape
+        depthwise_kernel_weights = np.random.normal(size=depthwise_kernel_shape)
+        layer.depthwise_kernel.assign(depthwise_kernel_weights)
 
-if __name__ == "__main__":
-    tf.test.main()
+        pointwise_kernel_shape = layer.pointwise_kernel.shape
+        pointwise_kernel_weights = np.random.normal(size=pointwise_kernel_shape)
+        layer.pointwise_kernel.assign(pointwise_kernel_weights)
+
+        bias_weights = np.random.normal(size=(filters,))
+        layer.bias.assign(bias_weights)
+
+        outputs = layer(inputs)
+        expected_depthwise = np_depthwise_conv2d(
+            inputs,
+            depthwise_kernel_weights,
+            np.zeros(4 * depth_multiplier),
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+        )
+        expected = np_conv2d(
+            expected_depthwise,
+            pointwise_kernel_weights,
+            bias_weights,
+            strides=1,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=1,
+            groups=1,
+        )
+
+        self.assertAllClose(outputs.shape, expected.shape)
+        self.assertAllClose(outputs, expected, rtol=1e-5, atol=1e-5)

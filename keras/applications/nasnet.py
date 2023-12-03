@@ -1,54 +1,12 @@
-# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-"""NASNet-A models for Keras.
-
-NASNet refers to Neural Architecture Search Network, a family of models
-that were designed automatically by learning the model architectures
-directly on the dataset of interest.
-
-Here we consider NASNet-A, the highest performance model that was found
-for the CIFAR-10 dataset, and then extended to ImageNet 2012 dataset,
-obtaining state of the art performance on CIFAR-10 and ImageNet 2012.
-Only the NASNet-A models, and their respective weights, which are suited
-for ImageNet 2012 are provided.
-
-The below table describes the performance on ImageNet 2012:
----------------------------------------------------------------------------
-Architecture         | Top-1 Acc | Top-5 Acc |  Multiply-Adds |  Params (M)
----------------------|-----------|-----------|----------------|------------
-NASNet-A (4 @ 1056)  |   74.0 %  |   91.6 %  |       564 M    |     5.3
-NASNet-A (6 @ 4032)  |   82.7 %  |   96.2 %  |      23.8 B    |    88.9
-
-Reference:
-  - [Learning Transferable Architectures for Scalable Image Recognition](
-      https://arxiv.org/abs/1707.07012) (CVPR 2018)
-"""
-
-import tensorflow.compat.v2 as tf
+import warnings
 
 from keras import backend
+from keras import layers
+from keras.api_export import keras_export
 from keras.applications import imagenet_utils
-from keras.engine import training
-from keras.layers import VersionAwareLayers
-from keras.utils import data_utils
-from keras.utils import layer_utils
-
-# isort: off
-from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.util.tf_export import keras_export
+from keras.models import Functional
+from keras.ops import operation_utils
+from keras.utils import file_utils
 
 BASE_WEIGHTS_PATH = (
     "https://storage.googleapis.com/tensorflow/keras-applications/nasnet/"
@@ -57,8 +15,6 @@ NASNET_MOBILE_WEIGHT_PATH = BASE_WEIGHTS_PATH + "NASNet-mobile.h5"
 NASNET_MOBILE_WEIGHT_PATH_NO_TOP = BASE_WEIGHTS_PATH + "NASNet-mobile-no-top.h5"
 NASNET_LARGE_WEIGHT_PATH = BASE_WEIGHTS_PATH + "NASNet-large.h5"
 NASNET_LARGE_WEIGHT_PATH_NO_TOP = BASE_WEIGHTS_PATH + "NASNet-large-no-top.h5"
-
-layers = VersionAwareLayers()
 
 
 def NASNet(
@@ -91,68 +47,75 @@ def NASNet(
       https://keras.io/guides/transfer_learning/).
 
     Note: each Keras Application expects a specific kind of input preprocessing.
-    For NasNet, call `tf.keras.applications.nasnet.preprocess_input`
+    For NasNet, call `keras.applications.nasnet.preprocess_input`
     on your inputs before passing them to the model.
     `nasnet.preprocess_input` will scale input pixels between -1 and 1.
 
     Args:
-      input_shape: Optional shape tuple, the input shape
-        is by default `(331, 331, 3)` for NASNetLarge and
-        `(224, 224, 3)` for NASNetMobile.
-        It should have exactly 3 input channels,
-        and width and height should be no smaller than 32.
-        E.g. `(224, 224, 3)` would be one valid value.
-      penultimate_filters: Number of filters in the penultimate layer.
-        NASNet models use the notation `NASNet (N @ P)`, where:
-            -   N is the number of blocks
-            -   P is the number of penultimate filters
-      num_blocks: Number of repeated blocks of the NASNet model.
-        NASNet models use the notation `NASNet (N @ P)`, where:
-            -   N is the number of blocks
-            -   P is the number of penultimate filters
-      stem_block_filters: Number of filters in the initial stem block
-      skip_reduction: Whether to skip the reduction step at the tail
-        end of the network.
-      filter_multiplier: Controls the width of the network.
-        - If `filter_multiplier` < 1.0, proportionally decreases the number
-            of filters in each layer.
-        - If `filter_multiplier` > 1.0, proportionally increases the number
-            of filters in each layer.
-        - If `filter_multiplier` = 1, default number of filters from the
-             paper are used at each layer.
-      include_top: Whether to include the fully-connected
-        layer at the top of the network.
-      weights: `None` (random initialization) or
-          `imagenet` (ImageNet weights)
-      input_tensor: Optional Keras tensor (i.e. output of
-        `layers.Input()`)
-        to use as image input for the model.
-      pooling: Optional pooling mode for feature extraction
-        when `include_top` is `False`.
-        - `None` means that the output of the model
-            will be the 4D tensor output of the
-            last convolutional block.
-        - `avg` means that global average pooling
-            will be applied to the output of the
-            last convolutional block, and thus
-            the output of the model will be a
-            2D tensor.
-        - `max` means that global max pooling will
-            be applied.
-      classes: Optional number of classes to classify images
-        into, only to be specified if `include_top` is True, and
-        if no `weights` argument is specified.
-      default_size: Specifies the default image size of the model
-      classifier_activation: A `str` or callable. The activation function to use
-        on the "top" layer. Ignored unless `include_top=True`. Set
-        `classifier_activation=None` to return the logits of the "top" layer.
-        When loading pretrained weights, `classifier_activation` can only
-        be `None` or `"softmax"`.
+        input_shape: Optional shape tuple, the input shape
+            is by default `(331, 331, 3)` for NASNetLarge and
+            `(224, 224, 3)` for NASNetMobile.
+            It should have exactly 3 input channels,
+            and width and height should be no smaller than 32.
+            E.g. `(224, 224, 3)` would be one valid value.
+        penultimate_filters: Number of filters in the penultimate layer.
+            NASNet models use the notation `NASNet (N @ P)`, where:
+                -   N is the number of blocks
+                -   P is the number of penultimate filters
+        num_blocks: Number of repeated blocks of the NASNet model.
+            NASNet models use the notation `NASNet (N @ P)`, where:
+                -   N is the number of blocks
+                -   P is the number of penultimate filters
+        stem_block_filters: Number of filters in the initial stem block
+        skip_reduction: Whether to skip the reduction step at the tail
+            end of the network.
+        filter_multiplier: Controls the width of the network.
+            - If `filter_multiplier` < 1.0, proportionally decreases the number
+                of filters in each layer.
+            - If `filter_multiplier` > 1.0, proportionally increases the number
+                of filters in each layer.
+            - If `filter_multiplier` = 1, default number of filters from the
+                paper are used at each layer.
+        include_top: Whether to include the fully-connected
+            layer at the top of the network.
+        weights: `None` (random initialization) or
+            `imagenet` (ImageNet weights)
+        input_tensor: Optional Keras tensor (i.e. output of
+            `layers.Input()`)
+            to use as image input for the model.
+        pooling: Optional pooling mode for feature extraction
+            when `include_top` is `False`.
+            - `None` means that the output of the model
+                will be the 4D tensor output of the
+                last convolutional block.
+            - `avg` means that global average pooling
+                will be applied to the output of the
+                last convolutional block, and thus
+                the output of the model will be a
+                2D tensor.
+            - `max` means that global max pooling will
+                be applied.
+        classes: Optional number of classes to classify images
+            into, only to be specified if `include_top` is `True`, and
+            if no `weights` argument is specified.
+        default_size: Specifies the default image size of the model
+        classifier_activation: A `str` or callable.
+            The activation function to use on the "top" layer.
+            Ignored unless `include_top=True`.
+            Set `classifier_activation=None` to return the logits
+            of the "top" layer. When loading pretrained weights,
+            `classifier_activation` can only be `None` or `"softmax"`.
 
     Returns:
-      A `keras.Model` instance.
+        A model instance.
     """
-    if not (weights in {"imagenet", None} or tf.io.gfile.exists(weights)):
+    if backend.image_data_format() == "channels_first":
+        raise ValueError(
+            "NASNet does not support the `channels_first` image data "
+            "format. Switch to `channels_last` by editing your local "
+            "config file at ~/.keras/keras.json"
+        )
+    if not (weights in {"imagenet", None} or file_utils.exists(weights)):
         raise ValueError(
             "The `weights` argument should be either "
             "`None` (random initialization), `imagenet` "
@@ -192,7 +155,7 @@ def NASNet(
     )
 
     if backend.image_data_format() != "channels_last":
-        logging.warning(
+        warnings.warn(
             "The NASNet family of models is only available "
             'for the input data format "channels_last" '
             "(width, height, channels). "
@@ -201,12 +164,9 @@ def NASNet(
             ' You should set `image_data_format="channels_last"` '
             "in your Keras config located at ~/.keras/keras.json. "
             "The model being returned right now will expect inputs "
-            'to follow the "channels_last" data format.'
+            'to follow the "channels_last" data format.',
+            stacklevel=2,
         )
-        backend.set_image_data_format("channels_last")
-        old_data_format = "channels_first"
-    else:
-        old_data_format = None
 
     if input_tensor is None:
         img_input = layers.Input(shape=input_shape)
@@ -299,24 +259,24 @@ def NASNet(
     # Ensure that the model takes into account
     # any potential predecessors of `input_tensor`.
     if input_tensor is not None:
-        inputs = layer_utils.get_source_inputs(input_tensor)
+        inputs = operation_utils.get_source_inputs(input_tensor)
     else:
         inputs = img_input
 
-    model = training.Model(inputs, x, name="NASNet")
+    model = Functional(inputs, x, name="NASNet")
 
     # Load weights.
     if weights == "imagenet":
         if default_size == 224:  # mobile version
             if include_top:
-                weights_path = data_utils.get_file(
+                weights_path = file_utils.get_file(
                     "nasnet_mobile.h5",
                     NASNET_MOBILE_WEIGHT_PATH,
                     cache_subdir="models",
                     file_hash="020fb642bf7360b370c678b08e0adf61",
                 )
             else:
-                weights_path = data_utils.get_file(
+                weights_path = file_utils.get_file(
                     "nasnet_mobile_no_top.h5",
                     NASNET_MOBILE_WEIGHT_PATH_NO_TOP,
                     cache_subdir="models",
@@ -325,14 +285,14 @@ def NASNet(
             model.load_weights(weights_path)
         elif default_size == 331:  # large version
             if include_top:
-                weights_path = data_utils.get_file(
+                weights_path = file_utils.get_file(
                     "nasnet_large.h5",
                     NASNET_LARGE_WEIGHT_PATH,
                     cache_subdir="models",
                     file_hash="11577c9a518f0070763c2b964a382f17",
                 )
             else:
-                weights_path = data_utils.get_file(
+                weights_path = file_utils.get_file(
                     "nasnet_large_no_top.h5",
                     NASNET_LARGE_WEIGHT_PATH_NO_TOP,
                     cache_subdir="models",
@@ -347,14 +307,14 @@ def NASNet(
     elif weights is not None:
         model.load_weights(weights)
 
-    if old_data_format:
-        backend.set_image_data_format(old_data_format)
-
     return model
 
 
 @keras_export(
-    "keras.applications.nasnet.NASNetMobile", "keras.applications.NASNetMobile"
+    [
+        "keras.applications.nasnet.NASNetMobile",
+        "keras.applications.NASNetMobile",
+    ]
 )
 def NASNetMobile(
     input_shape=None,
@@ -376,7 +336,7 @@ def NASNetMobile(
     the one specified in your Keras config at `~/.keras/keras.json`.
 
     Note: each Keras Application expects a specific kind of input preprocessing.
-    For NASNet, call `tf.keras.applications.nasnet.preprocess_input` on your
+    For NASNet, call `keras.applications.nasnet.preprocess_input` on your
     inputs before passing them to the model.
 
     Args:
@@ -407,7 +367,7 @@ def NASNetMobile(
             - `max` means that global max pooling will
                 be applied.
         classes: Optional number of classes to classify images
-            into, only to be specified if `include_top` is True, and
+            into, only to be specified if `include_top` is `True`, and
             if no `weights` argument is specified.
         classifier_activation: A `str` or callable. The activation function to
             use on the "top" layer. Ignored unless `include_top=True`. Set
@@ -417,13 +377,13 @@ def NASNetMobile(
 
     Returns:
         A Keras model instance.
-
-    Raises:
-        ValueError: In case of invalid argument for `weights`,
-            or invalid input shape.
-        RuntimeError: If attempting to run this model with a
-            backend that does not support separable convolutions.
     """
+    if backend.backend() == "torch":
+        raise ValueError(
+            "NASNetMobile is not available with the torch backend "
+            "at this time due to an outstanding bug. "
+            "If interested, please open a PR."
+        )
     return NASNet(
         input_shape,
         penultimate_filters=1056,
@@ -442,7 +402,10 @@ def NASNetMobile(
 
 
 @keras_export(
-    "keras.applications.nasnet.NASNetLarge", "keras.applications.NASNetLarge"
+    [
+        "keras.applications.nasnet.NASNetLarge",
+        "keras.applications.NASNetLarge",
+    ]
 )
 def NASNetLarge(
     input_shape=None,
@@ -464,7 +427,7 @@ def NASNetLarge(
     the one specified in your Keras config at `~/.keras/keras.json`.
 
     Note: each Keras Application expects a specific kind of input preprocessing.
-    For NASNet, call `tf.keras.applications.nasnet.preprocess_input` on your
+    For NASNet, call `keras.applications.nasnet.preprocess_input` on your
     inputs before passing them to the model.
 
     Args:
@@ -495,22 +458,16 @@ def NASNetLarge(
             - `max` means that global max pooling will
                 be applied.
         classes: Optional number of classes to classify images
-            into, only to be specified if `include_top` is True, and
+            into, only to be specified if `include_top` is `True`, and
             if no `weights` argument is specified.
         classifier_activation: A `str` or callable. The activation function to
             use on the "top" layer. Ignored unless `include_top=True`. Set
             `classifier_activation=None` to return the logits of the "top"
-            layer.  When loading pretrained weights, `classifier_activation` can
-            only be `None` or `"softmax"`.
+            layer.  When loading pretrained weights, `classifier_activation`
+            can only be `None` or `"softmax"`.
 
     Returns:
         A Keras model instance.
-
-    Raises:
-        ValueError: in case of invalid argument for `weights`,
-            or invalid input shape.
-        RuntimeError: If attempting to run this model with a
-            backend that does not support separable convolutions.
     """
     return NASNet(
         input_shape,
@@ -563,7 +520,6 @@ def _separable_conv_block(
             name=f"separable_conv_1_{block_id}",
             padding=conv_pad,
             use_bias=False,
-            kernel_initializer="he_normal",
         )(x)
         x = layers.BatchNormalization(
             axis=channel_dim,
@@ -578,7 +534,6 @@ def _separable_conv_block(
             name=f"separable_conv_2_{block_id}",
             padding="same",
             use_bias=False,
-            kernel_initializer="he_normal",
         )(x)
         x = layers.BatchNormalization(
             axis=channel_dim,
@@ -606,16 +561,11 @@ def _adjust_block(p, ip, filters, block_id=None):
     channel_dim = 1 if backend.image_data_format() == "channels_first" else -1
     img_dim = 2 if backend.image_data_format() == "channels_first" else -2
 
-    ip_shape = backend.int_shape(ip)
-
-    if p is not None:
-        p_shape = backend.int_shape(p)
-
     with backend.name_scope("adjust_block"):
         if p is None:
             p = ip
 
-        elif p_shape[img_dim] != ip_shape[img_dim]:
+        elif p.shape[img_dim] != ip.shape[img_dim]:
             with backend.name_scope(f"adjust_reduction_block_{block_id}"):
                 p = layers.Activation("relu", name=f"adjust_relu_1_{block_id}")(
                     p
@@ -660,7 +610,7 @@ def _adjust_block(p, ip, filters, block_id=None):
                     name=f"adjust_bn_{block_id}",
                 )(p)
 
-        elif p_shape[channel_dim] != filters:
+        elif p.shape[channel_dim] != filters:
             with backend.name_scope(f"adjust_projection_block_{block_id}"):
                 p = layers.Activation("relu")(p)
                 p = layers.Conv2D(

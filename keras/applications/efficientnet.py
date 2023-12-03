@@ -1,40 +1,13 @@
-# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-
-"""EfficientNet models for Keras.
-
-Reference:
-  - [EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks](
-      https://arxiv.org/abs/1905.11946) (ICML 2019)
-"""
-
 import copy
 import math
 
-import tensorflow.compat.v2 as tf
-
 from keras import backend
+from keras import layers
+from keras.api_export import keras_export
 from keras.applications import imagenet_utils
-from keras.engine import training
-from keras.layers import VersionAwareLayers
-from keras.utils import data_utils
-from keras.utils import layer_utils
-
-# isort: off
-from tensorflow.python.util.tf_export import keras_export
+from keras.models import Functional
+from keras.ops import operation_utils
+from keras.utils import file_utils
 
 BASE_WEIGHTS_PATH = "https://storage.googleapis.com/keras-applications/"
 
@@ -164,38 +137,37 @@ DENSE_KERNEL_INITIALIZER = {
     },
 }
 
-layers = VersionAwareLayers()
-
 BASE_DOCSTRING = """Instantiates the {name} architecture.
 
-  Reference:
-  - [EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks](
-      https://arxiv.org/abs/1905.11946) (ICML 2019)
+Reference:
+- [EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks](
+    https://arxiv.org/abs/1905.11946) (ICML 2019)
 
-  This function returns a Keras image classification model,
-  optionally loaded with weights pre-trained on ImageNet.
+This function returns a Keras image classification model,
+optionally loaded with weights pre-trained on ImageNet.
 
-  For image classification use cases, see
-  [this page for detailed examples](
-    https://keras.io/api/applications/#usage-examples-for-image-classification-models).
+For image classification use cases, see
+[this page for detailed examples](
+https://keras.io/api/applications/#usage-examples-for-image-classification-models).
 
-  For transfer learning use cases, make sure to read the
-  [guide to transfer learning & fine-tuning](
-    https://keras.io/guides/transfer_learning/).
+For transfer learning use cases, make sure to read the
+[guide to transfer learning & fine-tuning](
+https://keras.io/guides/transfer_learning/).
 
-  Note: each Keras Application expects a specific kind of input preprocessing.
-  For EfficientNet, input preprocessing is included as part of the model
-  (as a `Rescaling` layer), and thus
-  `tf.keras.applications.efficientnet.preprocess_input` is actually a
-  pass-through function. EfficientNet models expect their inputs to be float
-  tensors of pixels with values in the [0-255] range.
+Note: each Keras Application expects a specific kind of input preprocessing.
+For EfficientNet, input preprocessing is included as part of the model
+(as a `Rescaling` layer), and thus
+`keras.applications.efficientnet.preprocess_input` is actually a
+pass-through function. EfficientNet models expect their inputs to be float
+tensors of pixels with values in the `[0-255]` range.
 
-  Args:
+Args:
     include_top: Whether to include the fully-connected
         layer at the top of the network. Defaults to `True`.
     weights: One of `None` (random initialization),
-          'imagenet' (pre-training on ImageNet),
-          or the path to the weights file to be loaded. Defaults to 'imagenet'.
+        `"imagenet"` (pre-training on ImageNet),
+        or the path to the weights file to be loaded.
+        Defaults to `"imagenet"`.
     input_tensor: Optional Keras tensor
         (i.e. output of `layers.Input()`)
         to use as image input for the model.
@@ -220,12 +192,12 @@ BASE_DOCSTRING = """Instantiates the {name} architecture.
     classifier_activation: A `str` or callable. The activation function to use
         on the "top" layer. Ignored unless `include_top=True`. Set
         `classifier_activation=None` to return the logits of the "top" layer.
-        Defaults to 'softmax'.
+        Defaults to `'softmax'`.
         When loading pretrained weights, `classifier_activation` can only
         be `None` or `"softmax"`.
 
-  Returns:
-    A `keras.Model` instance.
+Returns:
+    A model instance.
 """
 
 
@@ -292,18 +264,12 @@ def EfficientNet(
           `classifier_activation=None` to return the logits of the "top" layer.
 
     Returns:
-      A `keras.Model` instance.
-
-    Raises:
-      ValueError: in case of invalid argument for `weights`,
-        or invalid input shape.
-      ValueError: if `classifier_activation` is not `softmax` or `None` when
-        using a pretrained top layer.
+        A model instance.
     """
     if blocks_args == "default":
         blocks_args = DEFAULT_BLOCKS_ARGS
 
-    if not (weights in {"imagenet", None} or tf.io.gfile.exists(weights)):
+    if not (weights in {"imagenet", None} or file_utils.exists(weights)):
         raise ValueError(
             "The `weights` argument should be either "
             "`None` (random initialization), `imagenet` "
@@ -313,7 +279,7 @@ def EfficientNet(
 
     if weights == "imagenet" and include_top and classes != 1000:
         raise ValueError(
-            'If using `weights` as `"imagenet"` with `include_top`'
+            'If using `weights="imagenet"` with `include_top`'
             " as true, `classes` should be 1000"
         )
 
@@ -440,12 +406,12 @@ def EfficientNet(
     # Ensure that the model takes into account
     # any potential predecessors of `input_tensor`.
     if input_tensor is not None:
-        inputs = layer_utils.get_source_inputs(input_tensor)
+        inputs = operation_utils.get_source_inputs(input_tensor)
     else:
         inputs = img_input
 
     # Create model.
-    model = training.Model(inputs, x, name=model_name)
+    model = Functional(inputs, x, name=model_name)
 
     # Load weights.
     if weights == "imagenet":
@@ -456,7 +422,7 @@ def EfficientNet(
             file_suffix = "_notop.h5"
             file_hash = WEIGHTS_HASHES[model_name[-2:]][1]
         file_name = model_name + file_suffix
-        weights_path = data_utils.get_file(
+        weights_path = file_utils.get_file(
             file_name,
             BASE_WEIGHTS_PATH + file_name,
             cache_subdir="models",
@@ -584,8 +550,10 @@ def block(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB0",
-    "keras.applications.EfficientNetB0",
+    [
+        "keras.applications.efficientnet.EfficientNetB0",
+        "keras.applications.EfficientNetB0",
+    ]
 )
 def EfficientNetB0(
     include_top=True,
@@ -615,8 +583,10 @@ def EfficientNetB0(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB1",
-    "keras.applications.EfficientNetB1",
+    [
+        "keras.applications.efficientnet.EfficientNetB1",
+        "keras.applications.EfficientNetB1",
+    ]
 )
 def EfficientNetB1(
     include_top=True,
@@ -646,8 +616,10 @@ def EfficientNetB1(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB2",
-    "keras.applications.EfficientNetB2",
+    [
+        "keras.applications.efficientnet.EfficientNetB2",
+        "keras.applications.EfficientNetB2",
+    ]
 )
 def EfficientNetB2(
     include_top=True,
@@ -677,8 +649,10 @@ def EfficientNetB2(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB3",
-    "keras.applications.EfficientNetB3",
+    [
+        "keras.applications.efficientnet.EfficientNetB3",
+        "keras.applications.EfficientNetB3",
+    ]
 )
 def EfficientNetB3(
     include_top=True,
@@ -708,8 +682,10 @@ def EfficientNetB3(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB4",
-    "keras.applications.EfficientNetB4",
+    [
+        "keras.applications.efficientnet.EfficientNetB4",
+        "keras.applications.EfficientNetB4",
+    ]
 )
 def EfficientNetB4(
     include_top=True,
@@ -739,8 +715,10 @@ def EfficientNetB4(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB5",
-    "keras.applications.EfficientNetB5",
+    [
+        "keras.applications.efficientnet.EfficientNetB5",
+        "keras.applications.EfficientNetB5",
+    ]
 )
 def EfficientNetB5(
     include_top=True,
@@ -770,8 +748,10 @@ def EfficientNetB5(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB6",
-    "keras.applications.EfficientNetB6",
+    [
+        "keras.applications.efficientnet.EfficientNetB6",
+        "keras.applications.EfficientNetB6",
+    ]
 )
 def EfficientNetB6(
     include_top=True,
@@ -801,8 +781,10 @@ def EfficientNetB6(
 
 
 @keras_export(
-    "keras.applications.efficientnet.EfficientNetB7",
-    "keras.applications.EfficientNetB7",
+    [
+        "keras.applications.efficientnet.EfficientNetB7",
+        "keras.applications.EfficientNetB7",
+    ]
 )
 def EfficientNetB7(
     include_top=True,
@@ -851,14 +833,14 @@ def preprocess_input(x, data_format=None):
     placeholder to align the API surface between old and new version of model.
 
     Args:
-      x: A floating point `numpy.array` or a `tf.Tensor`.
-      data_format: Optional data format of the image tensor/array. `None` means
-        the global setting `tf.keras.backend.image_data_format()` is used
-        (unless you changed it, it uses "channels_last").
-        Defaults to `None`.
+        x: A floating point `numpy.array` or a tensor.
+        data_format: Optional data format of the image tensor/array. `None`
+            means the global setting `keras.backend.image_data_format()`
+            is used (unless you changed it, it uses `"channels_last"`).
+            Defaults to `None`.
 
     Returns:
-      Unchanged `numpy.array` or `tf.Tensor`.
+        Unchanged `numpy.array` or tensor.
     """
     return x
 

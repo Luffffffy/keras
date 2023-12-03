@@ -1,59 +1,32 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for gaussian noise layer."""
-
 import numpy as np
-import tensorflow.compat.v2 as tf
+import pytest
 
-import keras
-from keras.testing_infra import test_combinations
-from keras.testing_infra import test_utils
+from keras import backend
+from keras import layers
+from keras import testing
 
 
-@test_combinations.run_all_keras_modes
-class NoiseLayersTest(test_combinations.TestCase):
-    def test_GaussianNoise(self):
-        test_utils.layer_test(
-            keras.layers.GaussianNoise,
-            kwargs={"stddev": 1.0},
-            input_shape=(3, 2, 3),
+class GaussianNoiseTest(testing.TestCase):
+    @pytest.mark.requires_trainable_backend
+    def test_gaussian_noise_basics(self):
+        self.run_layer_test(
+            layers.GaussianNoise,
+            init_kwargs={
+                "stddev": 0.2,
+            },
+            input_shape=(2, 3),
+            expected_output_shape=(2, 3),
+            expected_num_trainable_weights=0,
+            expected_num_non_trainable_weights=0,
+            expected_num_seed_generators=1,
+            expected_num_losses=0,
+            supports_masking=True,
         )
 
-    def _make_model(self, dtype):
-        assert dtype in (tf.float32, tf.float64)
-        model = keras.Sequential()
-        model.add(keras.layers.Dense(8, input_shape=(32,), dtype=dtype))
-        layer = keras.layers.GaussianNoise(0.0003, dtype=dtype)
-        model.add(layer)
-        return model
-
-    def _train_model(self, dtype):
-        model = self._make_model(dtype)
-        model.compile(
-            optimizer="sgd",
-            loss="mse",
-            run_eagerly=test_utils.should_run_eagerly(),
+    def test_gaussian_noise_correctness(self):
+        inputs = np.ones((20, 500))
+        layer = layers.GaussianNoise(0.3, seed=1337)
+        outputs = layer(inputs, training=True)
+        self.assertAllClose(
+            np.std(backend.convert_to_numpy(outputs)), 0.3, atol=0.02
         )
-        model.train_on_batch(np.zeros((8, 32)), np.zeros((8, 8)))
-
-    def test_gaussian_noise_float32(self):
-        self._train_model(tf.float32)
-
-    def test_gaussian_noise_float64(self):
-        self._train_model(tf.float64)
-
-
-if __name__ == "__main__":
-    tf.test.main()

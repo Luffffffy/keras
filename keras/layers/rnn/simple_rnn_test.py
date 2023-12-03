@@ -1,254 +1,283 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for SimpleRNN layer."""
-
-import copy
-
 import numpy as np
-import tensorflow.compat.v2 as tf
-from absl.testing import parameterized
+import pytest
 
-import keras
-from keras.testing_infra import test_combinations
-from keras.testing_infra import test_utils
+from keras import initializers
+from keras import layers
+from keras import testing
 
 
-@test_combinations.generate(test_combinations.keras_mode_combinations())
-class SimpleRNNLayerTest(tf.test.TestCase, parameterized.TestCase):
-    def test_return_sequences_SimpleRNN(self):
-        num_samples = 2
-        timesteps = 3
-        embedding_dim = 4
-        units = 2
-        test_utils.layer_test(
-            keras.layers.SimpleRNN,
-            kwargs={"units": units, "return_sequences": True},
-            input_shape=(num_samples, timesteps, embedding_dim),
+class SimpleRNNTest(testing.TestCase):
+    @pytest.mark.requires_trainable_backend
+    def test_basics(self):
+        self.run_layer_test(
+            layers.SimpleRNN,
+            init_kwargs={"units": 3, "dropout": 0.5, "recurrent_dropout": 0.5},
+            input_shape=(3, 2, 4),
+            call_kwargs={"training": True},
+            expected_output_shape=(3, 3),
+            expected_num_trainable_weights=3,
+            expected_num_non_trainable_weights=0,
+            expected_num_non_trainable_variables=1,
+            supports_masking=True,
         )
-
-    @test_utils.run_v2_only
-    def test_float64_SimpleRNN(self):
-        num_samples = 2
-        timesteps = 3
-        embedding_dim = 4
-        units = 2
-        test_utils.layer_test(
-            keras.layers.SimpleRNN,
-            kwargs={
-                "units": units,
+        self.run_layer_test(
+            layers.SimpleRNN,
+            init_kwargs={
+                "units": 3,
                 "return_sequences": True,
-                "dtype": "float64",
+                "bias_regularizer": "l1",
+                "kernel_regularizer": "l2",
+                "recurrent_regularizer": "l2",
             },
-            input_shape=(num_samples, timesteps, embedding_dim),
-            input_dtype="float64",
+            input_shape=(3, 2, 4),
+            expected_output_shape=(3, 2, 3),
+            expected_num_losses=3,
+            expected_num_trainable_weights=3,
+            expected_num_non_trainable_weights=0,
+            supports_masking=True,
         )
 
-    def test_dynamic_behavior_SimpleRNN(self):
-        num_samples = 2
-        timesteps = 3
-        embedding_dim = 4
-        units = 2
-        layer = keras.layers.SimpleRNN(units, input_shape=(None, embedding_dim))
-        model = keras.models.Sequential()
-        model.add(layer)
-        model.compile("rmsprop", "mse")
-        x = np.random.random((num_samples, timesteps, embedding_dim))
-        y = np.random.random((num_samples, units))
-        model.train_on_batch(x, y)
-
-    def test_dropout_SimpleRNN(self):
-        num_samples = 2
-        timesteps = 3
-        embedding_dim = 4
-        units = 2
-        test_utils.layer_test(
-            keras.layers.SimpleRNN,
-            kwargs={"units": units, "dropout": 0.1, "recurrent_dropout": 0.1},
-            input_shape=(num_samples, timesteps, embedding_dim),
+    def test_correctness(self):
+        sequence = np.arange(24).reshape((2, 3, 4)).astype("float32")
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+        )
+        output = layer(sequence)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.405432, 0.405432, 0.405432, 0.405432],
+                    [0.73605347, 0.73605347, 0.73605347, 0.73605347],
+                ]
+            ),
+            output,
+        )
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            unroll=True,
+        )
+        output = layer(sequence)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.405432, 0.405432, 0.405432, 0.405432],
+                    [0.73605347, 0.73605347, 0.73605347, 0.73605347],
+                ]
+            ),
+            output,
         )
 
-    def test_implementation_mode_SimpleRNN(self):
-        num_samples = 2
-        timesteps = 3
-        embedding_dim = 4
-        units = 2
-        for mode in [0, 1, 2]:
-            test_utils.layer_test(
-                keras.layers.SimpleRNN,
-                kwargs={"units": units, "implementation": mode},
-                input_shape=(num_samples, timesteps, embedding_dim),
-            )
-
-    def test_constraints_SimpleRNN(self):
-        embedding_dim = 4
-        layer_class = keras.layers.SimpleRNN
-        k_constraint = keras.constraints.max_norm(0.01)
-        r_constraint = keras.constraints.max_norm(0.01)
-        b_constraint = keras.constraints.max_norm(0.01)
-        layer = layer_class(
-            5,
-            return_sequences=False,
-            weights=None,
-            input_shape=(None, embedding_dim),
-            kernel_constraint=k_constraint,
-            recurrent_constraint=r_constraint,
-            bias_constraint=b_constraint,
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            go_backwards=True,
         )
-        layer.build((None, None, embedding_dim))
-        self.assertEqual(layer.cell.kernel.constraint, k_constraint)
-        self.assertEqual(layer.cell.recurrent_kernel.constraint, r_constraint)
-        self.assertEqual(layer.cell.bias.constraint, b_constraint)
-
-    def test_with_masking_layer_SimpleRNN(self):
-        layer_class = keras.layers.SimpleRNN
-        inputs = np.random.random((2, 3, 4))
-        targets = np.abs(np.random.random((2, 3, 5)))
-        targets /= targets.sum(axis=-1, keepdims=True)
-        model = keras.models.Sequential()
-        model.add(keras.layers.Masking(input_shape=(3, 4)))
-        model.add(layer_class(units=5, return_sequences=True, unroll=False))
-        model.compile(loss="categorical_crossentropy", optimizer="rmsprop")
-        model.fit(inputs, targets, epochs=1, batch_size=2, verbose=1)
-
-    def test_from_config_SimpleRNN(self):
-        layer_class = keras.layers.SimpleRNN
-        for stateful in (False, True):
-            l1 = layer_class(units=1, stateful=stateful)
-            l2 = layer_class.from_config(l1.get_config())
-            assert l1.get_config() == l2.get_config()
-
-    def test_deep_copy_SimpleRNN(self):
-        cell = keras.layers.SimpleRNNCell(5)
-        copied_cell = copy.deepcopy(cell)
-        self.assertEqual(copied_cell.units, 5)
-        self.assertEqual(cell.get_config(), copied_cell.get_config())
-
-    def test_regularizers_SimpleRNN(self):
-        embedding_dim = 4
-        layer_class = keras.layers.SimpleRNN
-        layer = layer_class(
-            5,
-            return_sequences=False,
-            weights=None,
-            input_shape=(None, embedding_dim),
-            kernel_regularizer=keras.regularizers.l1(0.01),
-            recurrent_regularizer=keras.regularizers.l1(0.01),
-            bias_regularizer="l2",
-            activity_regularizer="l1",
+        output = layer(sequence)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.11144729, 0.11144729, 0.11144729, 0.11144729],
+                    [0.5528889, 0.5528889, 0.5528889, 0.5528889],
+                ]
+            ),
+            output,
         )
-        layer.build((None, None, 2))
-        self.assertLen(layer.losses, 3)
-
-        x = keras.backend.variable(np.ones((2, 3, 2)))
-        layer(x)
-        if tf.executing_eagerly():
-            self.assertLen(layer.losses, 4)
-        else:
-            self.assertLen(layer.get_losses_for(x), 1)
-
-    def test_statefulness_SimpleRNN(self):
-        num_samples = 2
-        timesteps = 3
-        embedding_dim = 4
-        units = 2
-        layer_class = keras.layers.SimpleRNN
-        model = keras.models.Sequential()
-        model.add(
-            keras.layers.Embedding(
-                4,
-                embedding_dim,
-                mask_zero=True,
-                input_length=timesteps,
-                batch_input_shape=(num_samples, timesteps),
-            )
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            go_backwards=True,
+            unroll=True,
         )
-        layer = layer_class(
-            units, return_sequences=False, stateful=True, weights=None
+        output = layer(sequence)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.11144729, 0.11144729, 0.11144729, 0.11144729],
+                    [0.5528889, 0.5528889, 0.5528889, 0.5528889],
+                ]
+            ),
+            output,
         )
-        model.add(layer)
-        model.compile(
-            optimizer=tf.compat.v1.train.GradientDescentOptimizer(0.01),
-            loss="mse",
-            run_eagerly=test_utils.should_run_eagerly(),
+
+    def test_statefulness(self):
+        sequence = np.arange(24).reshape((2, 3, 4)).astype("float32")
+        layer = layers.SimpleRNN(
+            4,
+            stateful=True,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
         )
-        out1 = model.predict(np.ones((num_samples, timesteps)))
-        self.assertEqual(out1.shape, (num_samples, units))
-
-        # train once so that the states change
-        model.train_on_batch(
-            np.ones((num_samples, timesteps)), np.ones((num_samples, units))
+        layer(sequence)
+        output = layer(sequence)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.40559256, 0.40559256, 0.40559256, 0.40559256],
+                    [0.7361247, 0.7361247, 0.7361247, 0.7361247],
+                ]
+            ),
+            output,
         )
-        out2 = model.predict(np.ones((num_samples, timesteps)))
-
-        # if the state is not reset, output should be different
-        self.assertNotEqual(out1.max(), out2.max())
-
-        # check that output changes after states are reset
-        # (even though the model itself didn't change)
-        layer.reset_states()
-        out3 = model.predict(np.ones((num_samples, timesteps)))
-        self.assertNotEqual(out2.max(), out3.max())
-
-        # check that container-level reset_states() works
-        model.reset_states()
-        out4 = model.predict(np.ones((num_samples, timesteps)))
-        np.testing.assert_allclose(out3, out4, atol=1e-5)
-
-        # check that the call to `predict` updated the states
-        out5 = model.predict(np.ones((num_samples, timesteps)))
-        self.assertNotEqual(out4.max(), out5.max())
-
-        # Check masking
-        layer.reset_states()
-
-        left_padded_input = np.ones((num_samples, timesteps))
-        left_padded_input[0, :1] = 0
-        left_padded_input[1, :2] = 0
-        out6 = model.predict(left_padded_input)
-
-        layer.reset_states()
-
-        right_padded_input = np.ones((num_samples, timesteps))
-        right_padded_input[0, -1:] = 0
-        right_padded_input[1, -2:] = 0
-        out7 = model.predict(right_padded_input)
-
-        np.testing.assert_allclose(out7, out6, atol=1e-5)
-
-    def test_get_initial_states(self):
-        batch_size = 4
-        cell = keras.layers.SimpleRNNCell(20)
-        initial_state = cell.get_initial_state(
-            batch_size=batch_size, dtype=tf.float32
+        layer.reset_state()
+        layer(sequence)
+        output = layer(sequence)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.40559256, 0.40559256, 0.40559256, 0.40559256],
+                    [0.7361247, 0.7361247, 0.7361247, 0.7361247],
+                ]
+            ),
+            output,
         )
-        _, state = cell(
-            np.ones((batch_size, 20), dtype=np.float32), initial_state
+
+    def test_pass_initial_state(self):
+        sequence = np.arange(24).reshape((2, 4, 3)).astype("float32")
+        initial_state = np.arange(8).reshape((2, 4)).astype("float32")
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
         )
-        self.assertEqual(state.shape, initial_state.shape)
+        output = layer(sequence, initial_state=initial_state)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.33621645, 0.33621645, 0.33621645, 0.33621645],
+                    [0.6262637, 0.6262637, 0.6262637, 0.6262637],
+                ]
+            ),
+            output,
+        )
 
-    @test_utils.run_v2_only
-    def test_cloned_weight_names(self):
-        inp = keras.Input([None, 3])
-        rnn = keras.layers.SimpleRNN(units=3)
-        model = keras.Model(inp, rnn(inp))
-        clone = keras.models.clone_model(model)
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            go_backwards=True,
+        )
+        output = layer(sequence, initial_state=initial_state)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.07344437, 0.07344437, 0.07344437, 0.07344437],
+                    [0.43043602, 0.43043602, 0.43043602, 0.43043602],
+                ]
+            ),
+            output,
+        )
 
-        model_names = [x.name for x in model.weights]
-        clone_names = [x.name for x in clone.weights]
-        self.assertEqual(model_names, clone_names)
+    def test_masking(self):
+        sequence = np.arange(24).reshape((2, 4, 3)).astype("float32")
+        mask = np.array([[True, True, False, True], [True, False, False, True]])
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            unroll=True,
+        )
+        output = layer(sequence, mask=mask)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.32951632, 0.32951632, 0.32951632, 0.32951632],
+                    [0.61799484, 0.61799484, 0.61799484, 0.61799484],
+                ]
+            ),
+            output,
+        )
 
+        layer = layers.SimpleRNN(
+            2,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            return_sequences=True,
+        )
+        output = layer(sequence, mask=mask)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.0599281, 0.0599281],
+                    [0.15122814, 0.15122814],
+                    [0.15122814, 0.15122814],
+                    [0.32394567, 0.32394567],
+                ],
+            ),
+            output[0],
+        )
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.3969304, 0.3969304],
+                    [0.3969304, 0.3969304],
+                    [0.3969304, 0.3969304],
+                    [0.608085, 0.608085],
+                ],
+            ),
+            output[1],
+        )
 
-if __name__ == "__main__":
-    tf.test.main()
+        layer = layers.SimpleRNN(
+            2,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            return_sequences=True,
+            zero_output_for_mask=True,
+        )
+        output = layer(sequence, mask=mask)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.0599281, 0.0599281],
+                    [0.15122814, 0.15122814],
+                    [0.0, 0.0],
+                    [0.32394567, 0.32394567],
+                ],
+            ),
+            output[0],
+        )
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.3969304, 0.3969304],
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                    [0.608085, 0.608085],
+                ],
+            ),
+            output[1],
+        )
+
+        layer = layers.SimpleRNN(
+            4,
+            kernel_initializer=initializers.Constant(0.01),
+            recurrent_initializer=initializers.Constant(0.02),
+            bias_initializer=initializers.Constant(0.03),
+            go_backwards=True,
+        )
+        output = layer(sequence, mask=mask)
+        self.assertAllClose(
+            np.array(
+                [
+                    [0.07376196, 0.07376196, 0.07376196, 0.07376196],
+                    [0.43645123, 0.43645123, 0.43645123, 0.43645123],
+                ]
+            ),
+            output,
+        )

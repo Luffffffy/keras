@@ -1,61 +1,101 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for spatial dropout layers."""
+import numpy as np
+import pytest
 
-import tensorflow.compat.v2 as tf
-
-import keras
-from keras.testing_infra import test_combinations
-from keras.testing_infra import test_utils
+from keras import backend
+from keras import layers
+from keras.testing import test_case
 
 
-@test_combinations.run_all_keras_modes
-class SpacialDropoutTest(test_combinations.TestCase):
+class SpatialDropoutTest(test_case.TestCase):
+    @pytest.mark.requires_trainable_backend
     def test_spatial_dropout_1d(self):
-        test_utils.layer_test(
-            keras.layers.SpatialDropout1D,
-            kwargs={"rate": 0.5},
+        self.run_layer_test(
+            layers.SpatialDropout1D,
+            init_kwargs={"rate": 0.5},
+            call_kwargs={"training": True},
             input_shape=(2, 3, 4),
         )
 
+        self.run_layer_test(
+            layers.SpatialDropout1D,
+            init_kwargs={"rate": 0.5},
+            call_kwargs={"training": False},
+            input_shape=(2, 3, 4),
+        )
+
+    @pytest.mark.requires_trainable_backend
     def test_spatial_dropout_2d(self):
-        test_utils.layer_test(
-            keras.layers.SpatialDropout2D,
-            kwargs={"rate": 0.5},
+        self.run_layer_test(
+            layers.SpatialDropout2D,
+            init_kwargs={"rate": 0.5},
+            call_kwargs={"training": True},
             input_shape=(2, 3, 4, 5),
         )
 
-        test_utils.layer_test(
-            keras.layers.SpatialDropout2D,
-            kwargs={"rate": 0.5, "data_format": "channels_first"},
+        self.run_layer_test(
+            layers.SpatialDropout2D,
+            init_kwargs={"rate": 0.5, "data_format": "channels_first"},
+            call_kwargs={"training": True},
             input_shape=(2, 3, 4, 5),
         )
 
+    @pytest.mark.requires_trainable_backend
     def test_spatial_dropout_3d(self):
-        test_utils.layer_test(
-            keras.layers.SpatialDropout3D,
-            kwargs={"rate": 0.5},
+        self.run_layer_test(
+            layers.SpatialDropout3D,
+            init_kwargs={"rate": 0.5},
+            call_kwargs={"training": True},
             input_shape=(2, 3, 4, 4, 5),
         )
 
-        test_utils.layer_test(
-            keras.layers.SpatialDropout3D,
-            kwargs={"rate": 0.5, "data_format": "channels_first"},
+        self.run_layer_test(
+            layers.SpatialDropout3D,
+            init_kwargs={"rate": 0.5, "data_format": "channels_first"},
+            call_kwargs={"training": True},
             input_shape=(2, 3, 4, 4, 5),
         )
 
+    def test_spatial_dropout_1D_dynamic(self):
+        inputs = layers.Input((3, 2))
+        layer = layers.SpatialDropout1D(0.5)
+        layer(inputs, training=True)
 
-if __name__ == "__main__":
-    tf.test.main()
+    def test_spatial_dropout_1D_correctness(self):
+        inputs = np.ones((10, 3, 10))
+        layer = layers.SpatialDropout1D(0.5)
+        outputs = layer(inputs, training=True)
+        self.assertAllClose(outputs[:, 0, :], outputs[:, 1, :])
+
+    def test_spatial_dropout_2D_dynamic(self):
+        inputs = layers.Input((3, 2, 4))
+        layer = layers.SpatialDropout2D(0.5)
+        layer(inputs, training=True)
+
+    def test_spatial_dropout_2D_correctness(self):
+        if backend.config.image_data_format() == "channels_last":
+            inputs = np.ones((10, 3, 3, 10))
+        else:
+            inputs = np.ones((10, 10, 3, 3))
+        layer = layers.SpatialDropout2D(0.5)
+        outputs = layer(inputs, training=True)
+        if backend.config.image_data_format() == "channels_last":
+            self.assertAllClose(outputs[:, 0, 0, :], outputs[:, 1, 1, :])
+        else:
+            self.assertAllClose(outputs[:, :, 0, 0], outputs[:, :, 1, 1])
+
+    def test_spatial_dropout_3D_dynamic(self):
+        inputs = layers.Input((3, 2, 4, 2))
+        layer = layers.SpatialDropout3D(0.5)
+        layer(inputs, training=True)
+
+    def test_spatial_dropout_3D_correctness(self):
+        if backend.config.image_data_format() == "channels_last":
+            inputs = np.ones((10, 3, 3, 3, 10))
+        else:
+            inputs = np.ones((10, 10, 3, 3, 3))
+        layer = layers.SpatialDropout3D(0.5)
+        outputs = layer(inputs, training=True)
+        if backend.config.image_data_format() == "channels_last":
+            self.assertAllClose(outputs[:, 0, 0, 0, :], outputs[:, 1, 1, 1, :])
+        else:
+            self.assertAllClose(outputs[:, :, 0, 0, 0], outputs[:, :, 1, 1, 1])

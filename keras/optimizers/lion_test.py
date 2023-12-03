@@ -1,149 +1,85 @@
-# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for Lion."""
-
 import numpy as np
-import tensorflow.compat.v2 as tf
-from tensorflow.python.framework import dtypes
+import pytest
 
+import keras
+from keras import backend
+from keras import ops
+from keras import testing
 from keras.optimizers.lion import Lion
 
 
-def lion_update_numpy(
-    params,
-    grads,
-    momentums,
-    learning_rate=0.0001,
-    beta_1=0.9,
-    beta_2=0.99,
-):
-    params = params - learning_rate * np.sign(
-        beta_1 * momentums + (1 - beta_1) * grads
-    )
-    momentums = beta_2 * momentums + (1 - beta_2) * grads
-    return params, momentums
+class LionTest(testing.TestCase):
+    def test_config(self):
+        optimizer = Lion(
+            learning_rate=0.5,
+            beta_1=0.5,
+            beta_2=0.67,
+        )
+        self.run_class_serialization_test(optimizer)
 
+    def test_single_step(self):
+        optimizer = Lion(learning_rate=0.5)
+        grads = ops.array([1.0, 6.0, 7.0, 2.0])
+        vars = backend.Variable([1.0, 2.0, 3.0, 4.0])
+        optimizer.apply_gradients(zip([grads], [vars]))
+        self.assertAllClose(vars, [0.5, 1.5, 2.5, 3.5], rtol=1e-4, atol=1e-4)
 
-class LionOptimizerTest(tf.test.TestCase):
-    def testDense(self):
-        for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-            learning_rate = 0.0001
-            beta_1 = 0.9
-            beta_2 = 0.99
-            with self.cached_session():
-                m0_np = np.array([0.0, 0.0], dtype=dtype.as_numpy_dtype)
-                m1_np = np.array([0.0, 0.0], dtype=dtype.as_numpy_dtype)
-                var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
-                var1_np = np.array([3.0, 4.0], dtype=dtype.as_numpy_dtype)
-                grads0_np = np.array([0.9, 0.0], dtype=dtype.as_numpy_dtype)
-                grads1_np = np.array([0.1, 0.0], dtype=dtype.as_numpy_dtype)
+    def test_weight_decay(self):
+        grads, var1, var2, var3 = (
+            ops.zeros(()),
+            backend.Variable(2.0),
+            backend.Variable(2.0, name="exclude"),
+            backend.Variable(2.0),
+        )
+        optimizer_1 = Lion(learning_rate=1.0, weight_decay=0.004)
+        optimizer_1.apply_gradients(zip([grads], [var1]))
 
-                var0 = tf.Variable(var0_np)
-                var1 = tf.Variable(var1_np)
-                grads0 = tf.constant(grads0_np)
-                grads1 = tf.constant(grads1_np)
-                optimizer = Lion(
-                    learning_rate=learning_rate,
-                    beta_1=beta_1,
-                    beta_2=beta_2,
-                )
+        optimizer_2 = Lion(learning_rate=1.0, weight_decay=0.004)
+        optimizer_2.exclude_from_weight_decay(var_names=["exclude"])
+        optimizer_2.apply_gradients(zip([grads, grads], [var1, var2]))
 
-                # Run 3 steps of Lion
-                for _ in range(3):
-                    optimizer.apply_gradients(
-                        zip([grads0, grads1], [var0, var1])
-                    )
-                    var0_np, m0_np = lion_update_numpy(
-                        var0_np,
-                        grads0_np,
-                        m0_np,
-                        learning_rate=learning_rate,
-                        beta_1=beta_1,
-                        beta_2=beta_2,
-                    )
-                    var1_np, m1_np = lion_update_numpy(
-                        var1_np,
-                        grads1_np,
-                        m1_np,
-                        learning_rate=learning_rate,
-                        beta_1=beta_1,
-                        beta_2=beta_2,
-                    )
-                    # Validate updated params
-                    self.assertAllCloseAccordingToType(var0_np, var0)
-                    self.assertAllCloseAccordingToType(var1_np, var1)
+        optimizer_3 = Lion(learning_rate=1.0, weight_decay=0.004)
+        optimizer_3.exclude_from_weight_decay(var_list=[var3])
+        optimizer_3.apply_gradients(zip([grads, grads], [var1, var3]))
 
-    def testSparse(self):
-        for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-            learning_rate = 0.0001
-            beta_1 = 0.9
-            beta_2 = 0.99
-            with self.cached_session():
-                m0_np = np.array([0.0, 0.0], dtype=dtype.as_numpy_dtype)
-                m1_np = np.array([0.0, 0.0], dtype=dtype.as_numpy_dtype)
-                var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
-                var1_np = np.array([3.0, 4.0], dtype=dtype.as_numpy_dtype)
-                grads0_np = np.array([0.9, 0.0], dtype=dtype.as_numpy_dtype)
-                grads1_np = np.array([0.1, 0.0], dtype=dtype.as_numpy_dtype)
+        self.assertAlmostEqual(var1.numpy(), 1.9760959, decimal=6)
+        self.assertAlmostEqual(var2.numpy(), 2.0, decimal=6)
+        self.assertAlmostEqual(var3.numpy(), 2.0, decimal=6)
 
-                var0 = tf.Variable(var0_np)
-                var1 = tf.Variable(var1_np)
-                grads0_np_indices = np.array([0], dtype=np.int32)
-                grads0 = tf.IndexedSlices(
-                    tf.constant(grads0_np[grads0_np_indices]),
-                    tf.constant(grads0_np_indices),
-                    tf.constant([2]),
-                )
-                grads1_np_indices = np.array([0], dtype=np.int32)
-                grads1 = tf.IndexedSlices(
-                    tf.constant(grads1_np[grads1_np_indices]),
-                    tf.constant(grads1_np_indices),
-                    tf.constant([2]),
-                )
+    def test_correctness_with_golden(self):
+        optimizer = Lion()
 
-                optimizer = Lion(
-                    learning_rate=learning_rate,
-                    beta_1=beta_1,
-                    beta_2=beta_2,
-                )
+        x = backend.Variable(np.ones([10]))
+        grads = ops.arange(0.1, 1.1, 0.1)
+        first_grads = ops.full((10,), 0.01)
 
-                # Run 3 steps of Lion
-                for _ in range(3):
-                    optimizer.apply_gradients(
-                        zip([grads0, grads1], [var0, var1])
-                    )
-                    var0_np, m0_np = lion_update_numpy(
-                        var0_np,
-                        grads0_np,
-                        m0_np,
-                        learning_rate=learning_rate,
-                        beta_1=beta_1,
-                        beta_2=beta_2,
-                    )
-                    var1_np, m1_np = lion_update_numpy(
-                        var1_np,
-                        grads1_np,
-                        m1_np,
-                        learning_rate=learning_rate,
-                        beta_1=beta_1,
-                        beta_2=beta_2,
-                    )
-                    # Validate updated params
-                    self.assertAllCloseAccordingToType(var0_np, var0)
-                    self.assertAllCloseAccordingToType(var1_np, var1)
+        golden = np.tile(
+            [[0.999], [0.998], [0.997], [0.996], [0.995]],
+            (1, 10),
+        )
 
+        optimizer.apply_gradients(zip([first_grads], [x]))
+        for i in range(5):
+            self.assertAllClose(x, golden[i], rtol=5e-4, atol=5e-4)
+            optimizer.apply_gradients(zip([grads], [x]))
 
-if __name__ == "__main__":
-    tf.test.main()
+    def test_clip_norm(self):
+        optimizer = Lion(clipnorm=1)
+        grad = [np.array([100.0, 100.0])]
+        clipped_grad = optimizer._clip_gradients(grad)
+        self.assertAllClose(clipped_grad[0], [2**0.5 / 2, 2**0.5 / 2])
+
+    def test_clip_value(self):
+        optimizer = Lion(clipvalue=1)
+        grad = [np.array([100.0, 100.0])]
+        clipped_grad = optimizer._clip_gradients(grad)
+        self.assertAllClose(clipped_grad[0], [1.0, 1.0])
+
+    @pytest.mark.requires_trainable_backend
+    def test_ema(self):
+        # TODO: test correctness
+        model = keras.Sequential([keras.layers.Dense(10)])
+        model.compile(optimizer=Lion(use_ema=True), loss="mse")
+        x = keras.ops.zeros((1, 5))
+        y = keras.ops.zeros((1, 10))
+        model.fit(x, y)

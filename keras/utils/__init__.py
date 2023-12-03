@@ -1,74 +1,24 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Public Keras utilities."""
-
-# isort: off
-
-# Serialization related
-from keras.saving.serialization_lib import deserialize_keras_object
-from keras.saving.serialization_lib import serialize_keras_object
-from keras.saving.object_registration import CustomObjectScope
-from keras.saving.object_registration import custom_object_scope
-from keras.saving.object_registration import get_custom_objects
-from keras.saving.object_registration import get_registered_name
-from keras.saving.object_registration import register_keras_serializable
-
-# Dataset related
-from keras.utils.audio_dataset import audio_dataset_from_directory
-from keras.utils.text_dataset import text_dataset_from_directory
-from keras.utils.timeseries_dataset import timeseries_dataset_from_array
-from keras.utils.image_dataset import image_dataset_from_directory
+from keras.utils.audio_dataset_utils import audio_dataset_from_directory
 from keras.utils.dataset_utils import split_dataset
-
-# Sequence related
-from keras.utils.data_utils import GeneratorEnqueuer
-from keras.utils.data_utils import OrderedEnqueuer
-from keras.utils.data_utils import Sequence
-from keras.utils.data_utils import SequenceEnqueuer
-
-# Image related
+from keras.utils.file_utils import get_file
+from keras.utils.image_dataset_utils import image_dataset_from_directory
 from keras.utils.image_utils import array_to_img
 from keras.utils.image_utils import img_to_array
 from keras.utils.image_utils import load_img
 from keras.utils.image_utils import save_img
-
-# Python utils
-from keras.utils.tf_utils import set_random_seed
-from keras.utils.generic_utils import Progbar
-from keras.utils.data_utils import get_file
-
-# Preprocessing utils
-from keras.utils.feature_space import FeatureSpace
-
-# Internal
-from keras.utils.layer_utils import get_source_inputs
-from keras.utils.layer_utils import warmstart_embedding_matrix
-
-# Deprecated
-from keras.utils.np_utils import normalize
-from keras.utils.np_utils import to_categorical
-from keras.utils.np_utils import to_ordinal
-from keras.utils.data_utils import pad_sequences
-
-# Evaluation related
-from keras.utils.sidecar_evaluator import SidecarEvaluator
-from keras.utils.sidecar_evaluator import SidecarEvaluatorModelExport
-
-# Timed Thread
-from keras.utils.timed_threads import TimedThread
-
-# Visualization related
-from keras.utils.vis_utils import model_to_dot
-from keras.utils.vis_utils import plot_model
+from keras.utils.io_utils import disable_interactive_logging
+from keras.utils.io_utils import enable_interactive_logging
+from keras.utils.io_utils import is_interactive_logging_enabled
+from keras.utils.model_visualization import model_to_dot
+from keras.utils.model_visualization import plot_model
+from keras.utils.numerical_utils import normalize
+from keras.utils.numerical_utils import to_categorical
+from keras.utils.progbar import Progbar
+from keras.utils.python_utils import default
+from keras.utils.python_utils import is_default
+from keras.utils.python_utils import removeprefix
+from keras.utils.python_utils import removesuffix
+from keras.utils.rng_utils import set_random_seed
+from keras.utils.sequence_utils import pad_sequences
+from keras.utils.text_dataset_utils import text_dataset_from_directory
+from keras.utils.timeseries_dataset_utils import timeseries_dataset_from_array

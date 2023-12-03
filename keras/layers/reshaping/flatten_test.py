@@ -1,59 +1,111 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for flatten layer."""
-
 import numpy as np
-import tensorflow.compat.v2 as tf
+import pytest
+from absl.testing import parameterized
 
-import keras
-from keras.testing_infra import test_combinations
-from keras.testing_infra import test_utils
+from keras import backend
+from keras import layers
+from keras import ops
+from keras import testing
 
 
-@test_combinations.run_all_keras_modes
-class FlattenTest(test_combinations.TestCase):
-    def test_flatten(self):
-        test_utils.layer_test(
-            keras.layers.Flatten, kwargs={}, input_shape=(3, 2, 4)
-        )
+class FlattenTest(testing.TestCase, parameterized.TestCase):
+    @parameterized.named_parameters(
+        [
+            {"testcase_name": "dense", "sparse": False},
+            {"testcase_name": "sparse", "sparse": True},
+        ]
+    )
+    @pytest.mark.requires_trainable_backend
+    def test_flatten(self, sparse):
+        if sparse and not backend.SUPPORTS_SPARSE_TENSORS:
+            pytest.skip("Backend does not support sparse tensors.")
 
-        # Test channels_first
         inputs = np.random.random((10, 3, 5, 5)).astype("float32")
-        outputs = test_utils.layer_test(
-            keras.layers.Flatten,
-            kwargs={"data_format": "channels_first"},
-            input_data=inputs,
+        # Make the ndarray relatively sparse
+        inputs = np.multiply(inputs, inputs >= 0.8)
+        expected_output_channels_last = ops.convert_to_tensor(
+            np.reshape(inputs, (-1, 5 * 5 * 3))
         )
-        target_outputs = np.reshape(
-            np.transpose(inputs, (0, 2, 3, 1)), (-1, 5 * 5 * 3)
+        expected_output_channels_first = ops.convert_to_tensor(
+            np.reshape(np.transpose(inputs, (0, 2, 3, 1)), (-1, 5 * 5 * 3))
         )
-        self.assertAllClose(outputs, target_outputs)
+        if sparse:
+            import tensorflow as tf
 
-    def test_flatten_scalar_channels(self):
-        test_utils.layer_test(keras.layers.Flatten, kwargs={}, input_shape=(3,))
+            inputs = tf.sparse.from_dense(inputs)
+            expected_output_channels_last = tf.sparse.from_dense(
+                expected_output_channels_last
+            )
+            expected_output_channels_first = tf.sparse.from_dense(
+                expected_output_channels_first
+            )
+
+        # Test default data_format and channels_last
+        self.run_layer_test(
+            layers.Flatten,
+            init_kwargs={},
+            input_data=inputs,
+            input_sparse=True,
+            expected_output=expected_output_channels_last
+            if backend.config.image_data_format() == "channels_last"
+            else expected_output_channels_first,
+            expected_output_sparse=sparse,
+            run_training_check=not sparse,
+        )
+        self.run_layer_test(
+            layers.Flatten,
+            init_kwargs={"data_format": "channels_last"},
+            input_data=inputs,
+            input_sparse=True,
+            expected_output=expected_output_channels_last,
+            expected_output_sparse=sparse,
+            run_training_check=not sparse,
+        )
 
         # Test channels_first
-        inputs = np.random.random((10,)).astype("float32")
-        outputs = test_utils.layer_test(
-            keras.layers.Flatten,
-            kwargs={"data_format": "channels_first"},
+        self.run_layer_test(
+            layers.Flatten,
+            init_kwargs={"data_format": "channels_first"},
             input_data=inputs,
+            input_sparse=True,
+            expected_output=expected_output_channels_first,
+            expected_output_sparse=sparse,
+            run_training_check=not sparse,
         )
-        target_outputs = np.expand_dims(inputs, -1)
-        self.assertAllClose(outputs, target_outputs)
 
+    @pytest.mark.requires_trainable_backend
+    def test_flatten_with_scalar_channels(self):
+        inputs = np.random.random((10,)).astype("float32")
+        expected_output = ops.convert_to_tensor(np.expand_dims(inputs, -1))
 
-if __name__ == "__main__":
-    tf.test.main()
+        # Test default data_format and channels_last
+        self.run_layer_test(
+            layers.Flatten,
+            init_kwargs={},
+            input_data=inputs,
+            expected_output=expected_output,
+        )
+        self.run_layer_test(
+            layers.Flatten,
+            init_kwargs={"data_format": "channels_last"},
+            input_data=inputs,
+            expected_output=expected_output,
+        )
+
+        # Test channels_first
+        self.run_layer_test(
+            layers.Flatten,
+            init_kwargs={"data_format": "channels_first"},
+            input_data=inputs,
+            expected_output=expected_output,
+        )
+
+    def test_flatten_with_dynamic_batch_size(self):
+        input_layer = layers.Input(batch_shape=(None, 2, 3))
+        flattened = layers.Flatten()(input_layer)
+        self.assertEqual(flattened.shape, (None, 2 * 3))
+
+    def test_flatten_with_dynamic_dimension(self):
+        input_layer = layers.Input(batch_shape=(5, 2, None))
+        flattened = layers.Flatten()(input_layer)
+        self.assertEqual(flattened.shape, (5, None))

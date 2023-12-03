@@ -1,110 +1,36 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
 """Python-based idempotent model-saving functionality."""
 
 import datetime
 import io
 import json
-import os
-import re
 import tempfile
-import threading
 import warnings
 import zipfile
 
 import numpy as np
-import tensorflow.compat.v2 as tf
 
-import keras
-from keras import losses
-from keras.engine import base_layer
-from keras.optimizers import optimizer
+from keras.backend.common import global_state
+from keras.layers.layer import Layer
+from keras.losses.loss import Loss
+from keras.metrics.metric import Metric
+from keras.optimizers.optimizer import Optimizer
 from keras.saving.serialization_lib import ObjectSharingScope
 from keras.saving.serialization_lib import deserialize_keras_object
 from keras.saving.serialization_lib import serialize_keras_object
-from keras.utils import generic_utils
-from keras.utils import io_utils
+from keras.trainers.compile_utils import CompileMetrics
+from keras.utils import file_utils
+from keras.utils import naming
+from keras.version import __version__ as keras_version
 
 try:
     import h5py
 except ImportError:
     h5py = None
 
-keras_saving_gauge = tf.__internal__.monitoring.BoolGauge(
-    "/tensorflow/api/keras/saving", "keras saving usage", "method"
-)
-
-# isort: off
-
 _CONFIG_FILENAME = "config.json"
 _METADATA_FILENAME = "metadata.json"
 _VARS_FNAME = "model.weights"  # Will become e.g. "model.weights.h5"
 _ASSETS_DIRNAME = "assets"
-
-# A temporary flag to enable the new idempotent saving framework.
-_SAVING_V3_ENABLED = threading.local()
-_SAVING_V3_ENABLED.value = True
-
-ATTR_SKIPLIST = frozenset(
-    {
-        "_callable_losses",
-        "_captured_weight_regularizer",
-        "_checkpoint_dependencies",
-        "_deferred_dependencies",
-        "_eager_losses",
-        "_inbound_nodes",
-        "_inbound_nodes_value",
-        "_output_layers",
-        "_input_layers",
-        "_keras_api_names",
-        "_keras_api_names_v1",
-        "_name_based_restores",
-        "_non_trainable_weights",
-        "_outbound_nodes",
-        "_outbound_nodes_value",
-        "_saved_model_arg_spec",
-        "_self_name_based_restores",
-        "_self_saveable_object_factories",
-        "_self_tracked_trackables",
-        "_saved_model_inputs_spec",
-        "_self_unconditional_checkpoint_dependencies",
-        "_self_unconditional_deferred_dependencies",
-        "_self_unconditional_dependency_names",
-        "_tf_api_names",
-        "_tf_api_names_v1",
-        "_trainable_weights",
-        "_non_trainable_weights",
-        "_unconditional_checkpoint_dependencies",
-        "_unconditional_dependency_names",
-        "_updates",
-        "_layer_call_argspecs",
-        "inbound_nodes",
-        "outbound_nodes",
-        "input_shape",
-        "output_shape",
-        "submodules",
-        "weights",
-        "non_trainable_weights",
-        "trainable_weights",
-        "variables",
-        "non_trainable_variables",
-        "trainable_variables",
-        "updates",  # Would raise a warning if visited.
-        "state_updates",  # Would raise a warning if visited.
-    }
-)
 
 
 def save_model(model, filepath, weights_format="h5"):
@@ -114,7 +40,7 @@ def save_model(model, filepath, weights_format="h5"):
 
     - JSON-based configuration file (config.json): Records of model, layer, and
         other trackables' configuration.
-    - NPZ-based trackable state files, found in respective directories, such as
+    - H5-based trackable state files, found in respective directories, such as
         model/states.npz, model/dense_layer/states.npz, etc.
     - Metadata file.
 
@@ -131,10 +57,6 @@ def save_model(model, filepath, weights_format="h5"):
     container (list, tuple, or dict), and the container is referenced via a
     layer attribute.
     """
-
-    # API usage tracking for Keras V3 saving
-    keras_saving_gauge.get_cell("save_model_v3").set(True)
-
     filepath = str(filepath)
     if not filepath.endswith(".keras"):
         raise ValueError(
@@ -152,68 +74,56 @@ def save_model(model, filepath, weights_format="h5"):
             "on some data.",
             stacklevel=2,
         )
-    saving_v3_enabled_value = getattr(_SAVING_V3_ENABLED, "value", False)
-    _SAVING_V3_ENABLED.value = True
 
     with ObjectSharingScope():
         serialized_model_dict = serialize_keras_object(model)
     config_json = json.dumps(serialized_model_dict)
     metadata_json = json.dumps(
         {
-            "keras_version": keras.__version__,
+            "keras_version": keras_version,
             "date_saved": datetime.datetime.now().strftime("%Y-%m-%d@%H:%M:%S"),
         }
     )
-    # TODO(rameshsampath): Need a better logic for local vs remote path
-    if is_remote_path(filepath):
-        # Remote path. Zip to local drive and copy to remote
-        zip_filepath = os.path.join(get_temp_dir(), "tmp_model.keras")
+    if file_utils.is_remote_path(filepath):
+        # Remote path. Zip to local memory byte io and copy to remote
+        zip_filepath = io.BytesIO()
     else:
         zip_filepath = filepath
-    try:
-        with zipfile.ZipFile(zip_filepath, "w") as zf:
 
-            with zf.open(_METADATA_FILENAME, "w") as f:
-                f.write(metadata_json.encode())
-            with zf.open(_CONFIG_FILENAME, "w") as f:
-                f.write(config_json.encode())
+    with zipfile.ZipFile(zip_filepath, "w") as zf:
+        with zf.open(_METADATA_FILENAME, "w") as f:
+            f.write(metadata_json.encode())
+        with zf.open(_CONFIG_FILENAME, "w") as f:
+            f.write(config_json.encode())
 
-            if weights_format == "h5":
-                weights_store = H5IOStore(
-                    _VARS_FNAME + ".h5", archive=zf, mode="w"
-                )
-            elif weights_format == "npz":
-                weights_store = NpzIOStore(
-                    _VARS_FNAME + ".npz", archive=zf, mode="w"
-                )
-            else:
-                raise ValueError(
-                    "Unknown `weights_format` argument. "
-                    "Expected 'h5' or 'npz'. "
-                    f"Received: weights_format={weights_format}"
-                )
-
-            asset_store = DiskIOStore(_ASSETS_DIRNAME, archive=zf, mode="w")
-
-            _save_state(
-                model,
-                weights_store=weights_store,
-                assets_store=asset_store,
-                inner_path="",
-                visited_trackables=set(),
+        if weights_format == "h5":
+            weights_store = H5IOStore(_VARS_FNAME + ".h5", archive=zf, mode="w")
+        elif weights_format == "npz":
+            weights_store = NpzIOStore(
+                _VARS_FNAME + ".npz", archive=zf, mode="w"
             )
-            weights_store.close()
-            asset_store.close()
+        else:
+            raise ValueError(
+                "Unknown `weights_format` argument. "
+                "Expected 'h5' or 'npz'. "
+                f"Received: weights_format={weights_format}"
+            )
 
-        if is_remote_path(filepath):
-            # Using tf.io.gfile context manager doesn't close zip file when
-            # writing to GCS. Hence writing to local and copying to filepath.
-            tf.io.gfile.copy(zip_filepath, filepath, overwrite=True)
-            os.remove(zip_filepath)
-    except Exception as e:
-        raise e
-    finally:
-        _SAVING_V3_ENABLED.value = saving_v3_enabled_value
+        asset_store = DiskIOStore(_ASSETS_DIRNAME, archive=zf, mode="w")
+
+        _save_state(
+            model,
+            weights_store=weights_store,
+            assets_store=asset_store,
+            inner_path="",
+            visited_trackables=set(),
+        )
+        weights_store.close()
+        asset_store.close()
+
+    if file_utils.is_remote_path(filepath):
+        with file_utils.File(filepath, "wb") as f:
+            f.write(zip_filepath.getvalue())
 
 
 def load_model(filepath, custom_objects=None, compile=True, safe_mode=True):
@@ -226,65 +136,52 @@ def load_model(filepath, custom_objects=None, compile=True, safe_mode=True):
             f"Received: filepath={filepath}"
         )
 
-    saving_v3_enabled_value = getattr(_SAVING_V3_ENABLED, "value", False)
-    _SAVING_V3_ENABLED.value = True
+    with file_utils.File(filepath, mode="r+b") as gfile_handle, zipfile.ZipFile(
+        gfile_handle, "r"
+    ) as zf:
+        with zf.open(_CONFIG_FILENAME, "r") as f:
+            config_json = f.read()
 
-    try:
-        with tf.io.gfile.GFile(
-            filepath, mode="r+b"
-        ) as gfile_handle, zipfile.ZipFile(gfile_handle, "r") as zf:
-
-            with zf.open(_CONFIG_FILENAME, "r") as f:
-                config_json = f.read()
-
-            # Note: we should NOT use a custom JSON decoder. Anything that
-            # needs custom decoding must be handled in deserialize_keras_object.
-            config_dict = json.loads(config_json)
-            if not compile:
-                # Disable compilation
-                config_dict["compile_config"] = None
-            # Construct the model from the configuration file in the archive.
-            with ObjectSharingScope():
-                model = deserialize_keras_object(
-                    config_dict, custom_objects, safe_mode=safe_mode
-                )
-
-            all_filenames = zf.namelist()
-            if _VARS_FNAME + ".h5" in all_filenames:
-                weights_store = H5IOStore(
-                    _VARS_FNAME + ".h5", archive=zf, mode="r"
-                )
-            elif _VARS_FNAME + ".npz" in all_filenames:
-                weights_store = NpzIOStore(
-                    _VARS_FNAME + ".npz", archive=zf, mode="r"
-                )
-            else:
-                raise ValueError(
-                    f"Expected a {_VARS_FNAME}.h5 or {_VARS_FNAME}.npz file."
-                )
-
-            if len(all_filenames) > 3:
-                asset_store = DiskIOStore(_ASSETS_DIRNAME, archive=zf, mode="r")
-            else:
-                asset_store = None
-
-            _load_state(
-                model,
-                weights_store=weights_store,
-                assets_store=asset_store,
-                inner_path="",
-                visited_trackables=set(),
+        # Note: we should NOT use a custom JSON decoder. Anything that
+        # needs custom decoding must be handled in deserialize_keras_object.
+        config_dict = json.loads(config_json)
+        if not compile:
+            # Disable compilation
+            config_dict["compile_config"] = None
+        # Construct the model from the configuration file in the archive.
+        with ObjectSharingScope():
+            model = deserialize_keras_object(
+                config_dict, custom_objects, safe_mode=safe_mode
             )
-            weights_store.close()
-            if asset_store:
-                asset_store.close()
 
-    except Exception as e:
-        raise e
-    else:
-        return model
-    finally:
-        _SAVING_V3_ENABLED.value = saving_v3_enabled_value
+        all_filenames = zf.namelist()
+        if _VARS_FNAME + ".h5" in all_filenames:
+            weights_store = H5IOStore(_VARS_FNAME + ".h5", archive=zf, mode="r")
+        elif _VARS_FNAME + ".npz" in all_filenames:
+            weights_store = NpzIOStore(
+                _VARS_FNAME + ".npz", archive=zf, mode="r"
+            )
+        else:
+            raise ValueError(
+                f"Expected a {_VARS_FNAME}.h5 or {_VARS_FNAME}.npz file."
+            )
+
+        if len(all_filenames) > 3:
+            asset_store = DiskIOStore(_ASSETS_DIRNAME, archive=zf, mode="r")
+        else:
+            asset_store = None
+
+        _load_state(
+            model,
+            weights_store=weights_store,
+            assets_store=asset_store,
+            inner_path="",
+            visited_trackables=set(),
+        )
+        weights_store.close()
+        if asset_store:
+            asset_store.close()
+    return model
 
 
 def save_weights_only(model, filepath):
@@ -294,10 +191,6 @@ def save_weights_only(model, filepath):
     """
     # TODO: if h5 filepath is remote, create the file in a temporary directory
     # then upload it
-
-    # API usage tracking for Keras V3 saving
-    keras_saving_gauge.get_cell("save_weights_v3").set(True)
-
     filepath = str(filepath)
     if not filepath.endswith(".weights.h5"):
         raise ValueError(
@@ -341,33 +234,50 @@ def load_weights_only(model, filepath, skip_mismatch=False):
         visited_trackables=set(),
     )
     weights_store.close()
-    if temp_dir and tf.io.gfile.exists(temp_dir):
-        tf.io.gfile.rmtree(temp_dir)
+    if temp_dir and file_utils.exists(temp_dir):
+        file_utils.rmtree(temp_dir)
     if archive:
         archive.close()
 
 
-def is_remote_path(filepath):
-    if re.match(r"^(/cns|/cfs|/gcs|.*://).*$", str(filepath)):
-        return True
-    return False
-
-
 def _write_to_zip_recursively(zipfile_to_save, system_path, zip_path):
-    if not tf.io.gfile.isdir(system_path):
+    if not file_utils.isdir(system_path):
         zipfile_to_save.write(system_path, zip_path)
     else:
-        for file_name in tf.io.gfile.listdir(system_path):
-            system_file_path = tf.io.gfile.join(system_path, file_name)
-            zip_file_path = tf.io.gfile.join(zip_path, file_name)
+        for file_name in file_utils.listdir(system_path):
+            system_file_path = file_utils.join(system_path, file_name).replace(
+                "\\", "/"
+            )
+            zip_file_path = file_utils.join(zip_path, file_name).replace(
+                "\\", "/"
+            )
             _write_to_zip_recursively(
                 zipfile_to_save, system_file_path, zip_file_path
             )
 
 
 def _walk_trackable(trackable):
-    for child_attr in dir(trackable):
-        if child_attr.startswith("__") or child_attr in ATTR_SKIPLIST:
+    from keras.models import Functional
+    from keras.models import Sequential
+
+    if isinstance(trackable, Sequential):
+        obj_type = "Sequential"
+    elif isinstance(trackable, Functional):
+        obj_type = "Functional"
+    elif isinstance(trackable, Layer):
+        obj_type = "Layer"
+    elif isinstance(trackable, Optimizer):
+        obj_type = "Optimizer"
+    elif isinstance(trackable, Metric):
+        obj_type = "Metric"
+    elif isinstance(trackable, Loss):
+        obj_type = "Loss"
+    else:
+        raise ValueError(f"Invalid obj_type: {obj_type}")
+    attr_skiplist = get_attr_skiplist(obj_type)
+
+    for child_attr in sorted(dir(trackable)):
+        if child_attr.startswith("__") or child_attr in attr_skiplist:
             continue
         try:
             child_obj = getattr(trackable, child_attr)
@@ -378,7 +288,11 @@ def _walk_trackable(trackable):
 
 
 def _save_state(
-    trackable, weights_store, assets_store, inner_path, visited_trackables
+    trackable,
+    weights_store,
+    assets_store,
+    inner_path,
+    visited_trackables,
 ):
     # If the trackable has already been saved, skip it.
     if id(trackable) in visited_trackables:
@@ -398,7 +312,9 @@ def _save_state(
                 child_obj,
                 weights_store,
                 assets_store,
-                inner_path=tf.io.gfile.join(inner_path, child_attr),
+                inner_path=file_utils.join(inner_path, child_attr).replace(
+                    "\\", "/"
+                ),
                 visited_trackables=visited_trackables,
             )
         elif isinstance(child_obj, (list, dict, tuple, set)):
@@ -406,7 +322,9 @@ def _save_state(
                 child_obj,
                 weights_store,
                 assets_store,
-                inner_path=tf.io.gfile.join(inner_path, child_attr),
+                inner_path=file_utils.join(inner_path, child_attr).replace(
+                    "\\", "/"
+                ),
                 visited_trackables=visited_trackables,
             )
 
@@ -460,7 +378,9 @@ def _load_state(
                 child_obj,
                 weights_store,
                 assets_store,
-                inner_path=tf.io.gfile.join(inner_path, child_attr),
+                inner_path=file_utils.join(inner_path, child_attr).replace(
+                    "\\", "/"
+                ),
                 skip_mismatch=skip_mismatch,
                 visited_trackables=visited_trackables,
             )
@@ -469,7 +389,9 @@ def _load_state(
                 child_obj,
                 weights_store,
                 assets_store,
-                inner_path=tf.io.gfile.join(inner_path, child_attr),
+                inner_path=file_utils.join(inner_path, child_attr).replace(
+                    "\\", "/"
+                ),
                 skip_mismatch=skip_mismatch,
                 visited_trackables=visited_trackables,
             )
@@ -487,7 +409,7 @@ def _save_container_state(
             # Do NOT address the trackable via `trackable.name`, since
             # names are usually autogenerated and thus not reproducible
             # (i.e. they may vary across two instances of the same model).
-            name = generic_utils.to_snake_case(trackable.__class__.__name__)
+            name = naming.to_snake_case(trackable.__class__.__name__)
             if name in used_names:
                 used_names[name] += 1
                 name = f"{name}_{used_names[name]}"
@@ -497,7 +419,7 @@ def _save_container_state(
                 trackable,
                 weights_store,
                 assets_store,
-                inner_path=tf.io.gfile.join(inner_path, name),
+                inner_path=file_utils.join(inner_path, name).replace("\\", "/"),
                 visited_trackables=visited_trackables,
             )
 
@@ -516,7 +438,7 @@ def _load_container_state(
 
     for trackable in container:
         if _is_keras_trackable(trackable):
-            name = generic_utils.to_snake_case(trackable.__class__.__name__)
+            name = naming.to_snake_case(trackable.__class__.__name__)
             if name in used_names:
                 used_names[name] += 1
                 name = f"{name}_{used_names[name]}"
@@ -526,7 +448,7 @@ def _load_container_state(
                 trackable,
                 weights_store,
                 assets_store,
-                inner_path=tf.io.gfile.join(inner_path, name),
+                inner_path=file_utils.join(inner_path, name).replace("\\", "/"),
                 skip_mismatch=skip_mismatch,
                 visited_trackables=visited_trackables,
             )
@@ -551,32 +473,34 @@ class DiskIOStore:
             self.tmp_dir = get_temp_dir()
             if self.mode == "r":
                 self.archive.extractall(path=self.tmp_dir)
-            self.working_dir = tf.io.gfile.join(self.tmp_dir, self.root_path)
+            self.working_dir = file_utils.join(
+                self.tmp_dir, self.root_path
+            ).replace("\\", "/")
             if self.mode == "w":
-                tf.io.gfile.makedirs(self.working_dir)
+                file_utils.makedirs(self.working_dir)
         else:
             if mode == "r":
                 self.working_dir = root_path
             else:
                 self.tmp_dir = get_temp_dir()
-                self.working_dir = tf.io.gfile.join(
+                self.working_dir = file_utils.join(
                     self.tmp_dir, self.root_path
-                )
-                tf.io.gfile.makedirs(self.working_dir)
+                ).replace("\\", "/")
+                file_utils.makedirs(self.working_dir)
 
     def make(self, path):
         if not path:
             return self.working_dir
-        path = tf.io.gfile.join(self.working_dir, path)
-        if not tf.io.gfile.exists(path):
-            tf.io.gfile.makedirs(path)
+        path = file_utils.join(self.working_dir, path).replace("\\", "/")
+        if not file_utils.exists(path):
+            file_utils.makedirs(path)
         return path
 
     def get(self, path):
         if not path:
             return self.working_dir
-        path = tf.io.gfile.join(self.working_dir, path)
-        if tf.io.gfile.exists(path):
+        path = file_utils.join(self.working_dir, path).replace("\\", "/")
+        if file_utils.exists(path):
             return path
         return None
 
@@ -585,8 +509,8 @@ class DiskIOStore:
             _write_to_zip_recursively(
                 self.archive, self.working_dir, self.root_path
             )
-        if self.tmp_dir and tf.io.gfile.exists(self.tmp_dir):
-            tf.io.gfile.rmtree(self.tmp_dir)
+        if self.tmp_dir and file_utils.exists(self.tmp_dir):
+            file_utils.rmtree(self.tmp_dir)
 
 
 class H5IOStore:
@@ -690,45 +614,51 @@ def get_temp_dir():
     return temp_dir
 
 
-def _is_keras_trackable(obj):
-    from keras.metrics import base_metric  # To avoid circular import
+def get_attr_skiplist(obj_type):
+    skiplist = global_state.get_global_attribute(
+        f"saving_attr_skiplist_{obj_type}", None
+    )
+    if skiplist is not None:
+        return skiplist
 
+    skiplist = [
+        "_self_unconditional_dependency_names",
+    ]
+    if obj_type == "Layer":
+        ref_obj = Layer()
+        skiplist += dir(ref_obj)
+    elif obj_type == "Functional":
+        ref_obj = Layer()
+        skiplist += dir(ref_obj) + ["operations", "_operations"]
+    elif obj_type == "Sequential":
+        ref_obj = Layer()
+        skiplist += dir(ref_obj) + ["_functional"]
+    elif obj_type == "Metric":
+        ref_obj_a = Metric()
+        ref_obj_b = CompileMetrics([], [])
+        skiplist += dir(ref_obj_a) + dir(ref_obj_b)
+    elif obj_type == "Optimizer":
+        ref_obj = Optimizer(1.0)
+        skiplist += dir(ref_obj)
+        skiplist.remove("variables")
+    elif obj_type == "Loss":
+        ref_obj = Loss()
+        skiplist += dir(ref_obj)
+    else:
+        raise ValueError(f"Invalid obj_type: {obj_type}")
+    global_state.set_global_attribute(
+        f"saving_attr_skiplist_{obj_type}", skiplist
+    )
+    return skiplist
+
+
+def _is_keras_trackable(obj):
     return isinstance(
         obj,
         (
-            base_layer.Layer,
-            optimizer.Optimizer,
-            base_metric.Metric,
-            losses.Loss,
+            Layer,
+            Optimizer,
+            Metric,
+            Loss,
         ),
     )
-
-
-def saving_v3_enabled():
-    return getattr(_SAVING_V3_ENABLED, "value", True)
-
-
-# Some debugging utilities.
-
-
-def _print_h5_file(h5_file, prefix="", action=None):
-    if not prefix:
-        print(f"Keras weights file ({h5_file}) {action}:")
-    if not hasattr(h5_file, "keys"):
-        return
-    for key in h5_file.keys():
-        print(f"...{prefix}{key}")
-        _print_h5_file(h5_file[key], prefix=prefix + "...")
-
-
-def _print_zip_file(zipfile, action):
-    io_utils.print_msg(f"Keras model archive {action}:")
-    # Same as `ZipFile.printdir()` except for using Keras' printing utility.
-    io_utils.print_msg(
-        "%-46s %19s %12s" % ("File Name", "Modified    ", "Size")
-    )
-    for zinfo in zipfile.filelist:
-        date = "%d-%02d-%02d %02d:%02d:%02d" % zinfo.date_time[:6]
-        io_utils.print_msg(
-            "%-46s %s %12d" % (zinfo.filename, date, zinfo.file_size)
-        )

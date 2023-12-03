@@ -1,66 +1,46 @@
-# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Keras-based einsum dense layer."""
-
-
 import re
-
-import tensorflow.compat.v2 as tf
 
 from keras import activations
 from keras import constraints
 from keras import initializers
+from keras import ops
 from keras import regularizers
-from keras.engine.base_layer import Layer
-
-# isort: off
-from tensorflow.python.util.tf_export import keras_export
+from keras.api_export import keras_export
+from keras.layers.layer import Layer
 
 
-@keras_export(
-    "keras.layers.EinsumDense", "keras.layers.experimental.EinsumDense"
-)
+@keras_export("keras.layers.EinsumDense")
 class EinsumDense(Layer):
-    """A layer that uses `tf.einsum` as the backing computation.
+    """A layer that uses `einsum` as the backing computation.
 
     This layer can perform einsum calculations of arbitrary dimensionality.
 
     Args:
-      equation: An equation describing the einsum to perform. This equation must
-        be a valid einsum string of the form `ab,bc->ac`, `...ab,bc->...ac`, or
-        `ab...,bc->ac...` where 'ab', 'bc', and 'ac' can be any valid einsum
-        axis expression sequence.
-      output_shape: The expected shape of the output tensor (excluding the batch
-        dimension and any dimensions represented by ellipses). You can specify
-        None for any dimension that is unknown or can be inferred from the input
-        shape.
-      activation: Activation function to use. If you don't specify anything, no
-        activation is applied (that is, a "linear" activation: `a(x) = x`).
-      bias_axes: A string containing the output dimension(s) to apply a bias to.
-        Each character in the `bias_axes` string should correspond to a
-        character in the output portion of the `equation` string.
-      kernel_initializer: Initializer for the `kernel` weights matrix.
-      bias_initializer: Initializer for the bias vector.
-      kernel_regularizer: Regularizer function applied to the `kernel` weights
-        matrix.
-      bias_regularizer: Regularizer function applied to the bias vector.
-      activity_regularizer: Regularizer function applied to the output of the
-        layer (its "activation").
-      kernel_constraint: Constraint function applied to the `kernel` weights
-        matrix.
-      bias_constraint: Constraint function applied to the bias vector.
+        equation: An equation describing the einsum to perform.
+            This equation must be a valid einsum string of the form
+            `ab,bc->ac`, `...ab,bc->...ac`, or
+            `ab...,bc->ac...` where 'ab', 'bc', and 'ac' can be any valid einsum
+            axis expression sequence.
+        output_shape: The expected shape of the output tensor
+            (excluding the batch dimension and any dimensions
+            represented by ellipses). You can specify `None` for any dimension
+            that is unknown or can be inferred from the input shape.
+        activation: Activation function to use. If you don't specify anything,
+            no activation is applied
+            (that is, a "linear" activation: `a(x) = x`).
+        bias_axes: A string containing the output dimension(s)
+            to apply a bias to. Each character in the `bias_axes` string
+            should correspond to a character in the output portion
+            of the `equation` string.
+        kernel_initializer: Initializer for the `kernel` weights matrix.
+        bias_initializer: Initializer for the bias vector.
+        kernel_regularizer: Regularizer function applied to the `kernel` weights
+            matrix.
+        bias_regularizer: Regularizer function applied to the bias vector.
+        kernel_constraint: Constraint function applied to the `kernel` weights
+            matrix.
+        bias_constraint: Constraint function applied to the bias vector.
+        **kwargs: Base layer keyword arguments, such as `name` and `dtype`.
 
     Examples:
 
@@ -68,15 +48,15 @@ class EinsumDense(Layer):
 
     This example shows how to instantiate a standard Keras dense layer using
     einsum operations. This example is equivalent to
-    `tf.keras.layers.Dense(64, use_bias=True)`.
+    `keras.layers.Dense(64, use_bias=True)`.
 
-    >>> layer = tf.keras.layers.EinsumDense("ab,bc->ac",
-    ...                                     output_shape=64,
-    ...                                     bias_axes="c")
-    >>> input_tensor = tf.keras.Input(shape=[32])
+    >>> layer = keras.layers.EinsumDense("ab,bc->ac",
+    ...                                       output_shape=64,
+    ...                                       bias_axes="c")
+    >>> input_tensor = keras.Input(shape=[32])
     >>> output_tensor = layer(input_tensor)
-    >>> output_tensor
-    <... shape=(None, 64) dtype=...>
+    >>> output_tensor.shape
+    (None, 64)
 
     **Applying a dense layer to a sequence**
 
@@ -86,13 +66,13 @@ class EinsumDense(Layer):
     dimension in the `output_shape` is `None`, because the sequence dimension
     `b` has an unknown shape.
 
-    >>> layer = tf.keras.layers.EinsumDense("abc,cd->abd",
-    ...                                     output_shape=(None, 64),
-    ...                                     bias_axes="d")
-    >>> input_tensor = tf.keras.Input(shape=[32, 128])
+    >>> layer = keras.layers.EinsumDense("abc,cd->abd",
+    ...                                       output_shape=(None, 64),
+    ...                                       bias_axes="d")
+    >>> input_tensor = keras.Input(shape=[32, 128])
     >>> output_tensor = layer(input_tensor)
-    >>> output_tensor
-    <... shape=(None, 32, 64) dtype=...>
+    >>> output_tensor.shape
+    (None, 32, 64)
 
     **Applying a dense layer to a sequence using ellipses**
 
@@ -105,13 +85,13 @@ class EinsumDense(Layer):
     layer can handle any number of sequence dimensions - including the case
     where no sequence dimension exists.
 
-    >>> layer = tf.keras.layers.EinsumDense("...x,xy->...y",
-    ...                                     output_shape=64,
-    ...                                     bias_axes="y")
-    >>> input_tensor = tf.keras.Input(shape=[32, 128])
+    >>> layer = keras.layers.EinsumDense("...x,xy->...y",
+    ...                                       output_shape=64,
+    ...                                       bias_axes="y")
+    >>> input_tensor = keras.Input(shape=[32, 128])
     >>> output_tensor = layer(input_tensor)
-    >>> output_tensor
-    <... shape=(None, 32, 64) dtype=...>
+    >>> output_tensor.shape
+    (None, 32, 64)
     """
 
     def __init__(
@@ -124,7 +104,6 @@ class EinsumDense(Layer):
         bias_initializer="zeros",
         kernel_regularizer=None,
         bias_regularizer=None,
-        activity_regularizer=None,
         kernel_constraint=None,
         bias_constraint=None,
         **kwargs,
@@ -132,9 +111,9 @@ class EinsumDense(Layer):
         super().__init__(**kwargs)
         self.equation = equation
         if isinstance(output_shape, int):
-            self.partial_output_shape = [output_shape]
+            self.partial_output_shape = (output_shape,)
         else:
-            self.partial_output_shape = list(output_shape)
+            self.partial_output_shape = tuple(output_shape)
         self.bias_axes = bias_axes
         self.activation = activations.get(activation)
         self.kernel_initializer = initializers.get(kernel_initializer)
@@ -145,17 +124,17 @@ class EinsumDense(Layer):
         self.bias_constraint = constraints.get(bias_constraint)
 
     def build(self, input_shape):
-        input_shape = tf.TensorShape(input_shape)
         shape_data = _analyze_einsum_string(
             self.equation,
             self.bias_axes,
             input_shape,
             self.partial_output_shape,
         )
-        kernel_shape, bias_shape, self.full_output_shape = shape_data
+        kernel_shape, bias_shape, full_output_shape = shape_data
+        self.full_output_shape = tuple(full_output_shape)
         self.kernel = self.add_weight(
-            "kernel",
-            shape=kernel_shape,
+            name="kernel",
+            shape=tuple(kernel_shape),
             initializer=self.kernel_initializer,
             regularizer=self.kernel_regularizer,
             constraint=self.kernel_constraint,
@@ -165,8 +144,8 @@ class EinsumDense(Layer):
 
         if bias_shape is not None:
             self.bias = self.add_weight(
-                "bias",
-                shape=bias_shape,
+                name="bias",
+                shape=tuple(bias_shape),
                 initializer=self.bias_initializer,
                 regularizer=self.bias_regularizer,
                 constraint=self.bias_constraint,
@@ -178,9 +157,10 @@ class EinsumDense(Layer):
         super().build(input_shape)
 
     def compute_output_shape(self, _):
-        return tf.TensorShape(self.full_output_shape)
+        return self.full_output_shape
 
     def get_config(self):
+        base_config = super().get_config()
         config = {
             "output_shape": self.partial_output_shape,
             "equation": self.equation,
@@ -200,16 +180,15 @@ class EinsumDense(Layer):
             "kernel_constraint": constraints.serialize(self.kernel_constraint),
             "bias_constraint": constraints.serialize(self.bias_constraint),
         }
-        base_config = super().get_config()
-        return dict(list(base_config.items()) + list(config.items()))
+        return {**base_config, **config}
 
     def call(self, inputs):
-        ret = tf.einsum(self.equation, inputs, self.kernel)
+        x = ops.einsum(self.equation, inputs, self.kernel)
         if self.bias is not None:
-            ret += self.bias
+            x += self.bias
         if self.activation is not None:
-            ret = self.activation(ret)
-        return ret
+            x = self.activation(x)
+        return x
 
 
 def _analyze_einsum_string(equation, bias_axes, input_shape, output_shape):

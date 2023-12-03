@@ -1,30 +1,16 @@
-# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
 """Library for exporting inference-only Keras models/layers."""
 
-import tensorflow.compat.v2 as tf
-from tensorflow.python.util.tf_export import keras_export
-
-from keras.engine import base_layer
-from keras.engine import functional
-from keras.engine import sequential
+from keras import backend
+from keras.api_export import keras_export
+from keras.layers import Layer
+from keras.models import Functional
+from keras.models import Sequential
 from keras.utils import io_utils
+from keras.utils.module_utils import tensorflow as tf
 
 
 @keras_export("keras.export.ExportArchive")
-class ExportArchive(tf.__internal__.tracking.AutoTrackable):
+class ExportArchive:
     """ExportArchive is used to write SavedModel artifacts (e.g. for inference).
 
     If you have a Keras model or layer that you want to export as SavedModel for
@@ -94,38 +80,83 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
         self._endpoint_names = []
         self._endpoint_signatures = {}
         self.tensorflow_version = tf.__version__
-        self.variables = []
-        self.trainable_variables = []
-        self.non_trainable_variables = []
 
-    @tf.__internal__.tracking.no_automatic_dependency_tracking
-    def track(self, layer):
-        """Track the variables (and other resources) of a layer or model."""
-        if not isinstance(layer, base_layer.Layer):
-            raise ValueError(
-                "Invalid layer type. Expected an instance of "
-                "`keras.layers.Layer` or `keras.Model`. "
-                f"Received instead an object of type '{type(layer)}'. "
-                f"Object received: {layer}"
+        self._tf_trackable = tf.__internal__.tracking.AutoTrackable()
+        self._tf_trackable.variables = []
+        self._tf_trackable.trainable_variables = []
+        self._tf_trackable.non_trainable_variables = []
+
+        if backend.backend() not in ("tensorflow", "jax"):
+            raise NotImplementedError(
+                "The export API is only compatible with JAX and TF backends."
             )
-        if not layer.built:
+
+        # TODO(nkovela): Make JAX version checking programatic.
+        if backend.backend() == "jax":
+            from jax import __version__ as jax_v
+
+            if jax_v > "0.4.15":
+                raise ValueError(
+                    "The export API is only compatible with JAX version 0.4.15 "
+                    f"and prior. Your JAX version: {jax_v}"
+                )
+
+    @property
+    def variables(self):
+        return self._tf_trackable.variables
+
+    @property
+    def trainable_variables(self):
+        return self._tf_trackable.trainable_variables
+
+    @property
+    def non_trainable_variables(self):
+        return self._tf_trackable.non_trainable_variables
+
+    def track(self, resource):
+        """Track the variables (and other assets) of a layer or model."""
+        if backend.backend() == "tensorflow" and not isinstance(
+            resource, tf.__internal__.tracking.Trackable
+        ):
             raise ValueError(
-                "The layer provided has not yet been built. "
-                "It must be built before export."
+                "Invalid resource type. Expected an instance of a "
+                "TensorFlow `Trackable` (such as a Keras `Layer` or `Model`). "
+                f"Received instead an object of type '{type(resource)}'. "
+                f"Object received: {resource}"
             )
+        if backend.backend() == "jax" and not isinstance(
+            resource, backend.jax.layer.JaxLayer
+        ):
+            raise ValueError(
+                "Invalid resource type. Expected an instance of a "
+                "JAX-based Keras `Layer` or `Model`. "
+                f"Received instead an object of type '{type(resource)}'. "
+                f"Object received: {resource}"
+            )
+        if isinstance(resource, Layer):
+            if not resource.built:
+                raise ValueError(
+                    "The layer provided has not yet been built. "
+                    "It must be built before export."
+                )
 
         # Layers in `_tracked` are not part of the trackables that get saved,
         # because we're creating the attribute in a
         # no_automatic_dependency_tracking scope.
         if not hasattr(self, "_tracked"):
             self._tracked = []
-        self._tracked.append(layer)
+        self._tracked.append(resource)
 
-        # Variables in the lists below are actually part of the trackables
-        # that get saved, because the lists are created in __init__.
-        self.variables += layer.variables
-        self.trainable_variables += layer.trainable_variables
-        self.non_trainable_variables += layer.non_trainable_variables
+        if isinstance(resource, Layer):
+            # Variables in the lists below are actually part of the trackables
+            # that get saved, because the lists are created in __init__.
+            self._tf_trackable.variables += resource.variables
+            self._tf_trackable.trainable_variables += (
+                resource.trainable_variables
+            )
+            self._tf_trackable.non_trainable_variables += (
+                resource.non_trainable_variables
+            )
 
     def add_endpoint(self, name, fn, input_signature=None):
         """Register a new serving endpoint.
@@ -238,7 +269,13 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
             raise ValueError(f"Endpoint name '{name}' is already taken.")
 
         if input_signature:
-            decorated_fn = tf.function(fn, input_signature=input_signature)
+            if backend.backend() == "tensorflow":
+                decorated_fn = tf.function(fn, input_signature=input_signature)
+            else:  # JAX backend
+                fn = self._convert_jax2tf_function(fn, input_signature)
+                decorated_fn = tf.function(
+                    fn, input_signature=input_signature, autograph=False
+                )
             self._endpoint_signatures[name] = input_signature
         else:
             if isinstance(fn, tf.types.experimental.GenericFunction):
@@ -270,7 +307,7 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
                     "    ],\n"
                     ")"
                 )
-        setattr(self, name, decorated_fn)
+        setattr(self._tf_trackable, name, decorated_fn)
         self._endpoint_names.append(name)
 
     def add_variable_collection(self, name, variables):
@@ -307,13 +344,21 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
                 "Expected `variables` to be a list/tuple/set. "
                 f"Received instead object of type '{type(variables)}'."
             )
-        if not all(isinstance(v, tf.Variable) for v in variables):
+        # Ensure that all variables added are either tf.Variables
+        # or Variables created by Keras 3 with the TF or JAX backends.
+        if not all(
+            isinstance(v, (tf.Variable, backend.Variable)) for v in variables
+        ):
             raise ValueError(
                 "Expected all elements in `variables` to be "
                 "`tf.Variable` instances. Found instead the following types: "
                 f"{list(set(type(v) for v in variables))}"
             )
-        setattr(self, name, list(variables))
+        if backend.backend() == "jax":
+            variables = tf.nest.flatten(
+                tf.nest.map_structure(tf.Variable, variables)
+            )
+        setattr(self._tf_trackable, name, list(variables))
 
     def write_out(self, filepath, options=None):
         """Write the corresponding SavedModel to disk.
@@ -335,7 +380,8 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
             raise ValueError(
                 "No endpoints have been set yet. Call add_endpoint()."
             )
-        self._filter_and_track_resources()
+        if backend.backend() == "tensorflow":
+            self._filter_and_track_resources()
 
         signatures = {}
         for name in self._endpoint_names:
@@ -345,12 +391,17 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
             signatures["serving_default"] = self._get_concrete_fn(
                 self._endpoint_names[0]
             )
+
         tf.saved_model.save(
-            self, filepath, options=options, signatures=signatures
+            self._tf_trackable,
+            filepath,
+            options=options,
+            signatures=signatures,
         )
+
         # Print out available endpoints
         endpoints = "\n\n".join(
-            _print_signature(getattr(self, name), name)
+            _print_signature(getattr(self._tf_trackable, name), name)
             for name in self._endpoint_names
         )
         io_utils.print_msg(
@@ -362,9 +413,11 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
     def _get_concrete_fn(self, endpoint):
         """Workaround for some SavedModel quirks."""
         if endpoint in self._endpoint_signatures:
-            return getattr(self, endpoint)
+            return getattr(self._tf_trackable, endpoint)
         else:
-            traces = getattr(self, endpoint)._trackable_children("saved_model")
+            traces = getattr(self._tf_trackable, endpoint)._trackable_children(
+                "saved_model"
+            )
             return list(traces.values())[0]
 
     def _get_variables_used_by_endpoints(self):
@@ -376,32 +429,52 @@ class ExportArchive(tf.__internal__.tracking.AutoTrackable):
         # Start by extracting variables from endpoints.
         fns = [self._get_concrete_fn(name) for name in self._endpoint_names]
         tvs, ntvs = _list_variables_used_by_fns(fns)
-        self._all_variables = list(tvs + ntvs)
+        self._tf_trackable._all_variables = list(tvs + ntvs)
 
         # Next, track lookup tables.
         # Hopefully, one day this will be automated at the tf.function level.
-        self._misc_assets = []
-        from keras.layers.preprocessing.index_lookup import IndexLookup
+        self._tf_trackable._misc_assets = []
+        from keras.layers import IntegerLookup
+        from keras.layers import StringLookup
+        from keras.layers import TextVectorization
 
         if hasattr(self, "_tracked"):
             for root in self._tracked:
                 descendants = tf.train.TrackableView(root).descendants()
                 for trackable in descendants:
-                    if isinstance(trackable, IndexLookup):
-                        self._misc_assets.append(trackable)
+                    if isinstance(
+                        trackable,
+                        (IntegerLookup, StringLookup, TextVectorization),
+                    ):
+                        self._tf_trackable._misc_assets.append(trackable)
+
+    def _convert_jax2tf_function(self, fn, input_signature):
+        from jax.experimental import jax2tf
+
+        shapes = []
+        for spec in input_signature:
+            shapes.append(self._spec_to_poly_shape(spec))
+        return jax2tf.convert(fn, polymorphic_shapes=shapes)
+
+    def _spec_to_poly_shape(self, spec):
+        if isinstance(spec, (dict, list)):
+            return tf.nest.map_structure(self._spec_to_poly_shape, spec)
+        spec_shape = spec.shape
+        spec_shape = str(spec_shape).replace("None", "b")
+        return spec_shape
 
 
 def export_model(model, filepath):
     export_archive = ExportArchive()
     export_archive.track(model)
-    if isinstance(model, (functional.Functional, sequential.Sequential)):
+    if isinstance(model, (Functional, Sequential)):
         input_signature = tf.nest.map_structure(_make_tensor_spec, model.inputs)
         if isinstance(input_signature, list) and len(input_signature) > 1:
             input_signature = [input_signature]
         export_archive.add_endpoint("serve", model.__call__, input_signature)
     else:
-        save_spec = model._get_save_spec()
-        if not save_spec:
+        save_spec = _get_save_spec(model)
+        if not save_spec or not model._called:
             raise ValueError(
                 "The model provided has never called. "
                 "It must be called at least once before export."
@@ -411,7 +484,25 @@ def export_model(model, filepath):
     export_archive.write_out(filepath)
 
 
-class ReloadedLayer(base_layer.Layer):
+def _get_save_spec(model):
+    shapes_dict = getattr(model, "_build_shapes_dict", None)
+    if not shapes_dict:
+        return None
+
+    if len(shapes_dict) == 1:
+        return tf.TensorSpec(
+            shape=list(shapes_dict.values())[0], dtype=model.input_dtype
+        )
+
+    specs = {}
+    for key, value in shapes_dict.items():
+        key = key.rstrip("_shape")
+        specs[key] = tf.TensorSpec(shape=value, dtype=model.input_dtype)
+    return specs
+
+
+@keras_export("keras.layers.TFSMLayer")
+class TFSMLayer(Layer):
     """Reload a Keras model/layer that was saved via SavedModel / ExportArchive.
 
     Arguments:
@@ -426,7 +517,7 @@ class ReloadedLayer(base_layer.Layer):
 
     ```python
     model.export("path/to/artifact")
-    reloaded_layer = ReloadedLayer("path/to/artifact")
+    reloaded_layer = TFSMLayer("path/to/artifact")
     outputs = reloaded_layer(inputs)
     ```
 
@@ -441,13 +532,13 @@ class ReloadedLayer(base_layer.Layer):
     * Only call endpoints with a single `inputs` tensor argument
     (which may optionally be a dict/tuple/list of tensors) are supported.
     For endpoints with multiple separate input tensor arguments, consider
-    subclassing `ReloadedLayer` and implementing a `call()` method with a
+    subclassing `TFSMLayer` and implementing a `call()` method with a
     custom signature.
     * If you need training-time behavior to differ from inference-time behavior
     (i.e. if you need the reloaded object to support a `training=True` argument
     in `__call__()`), make sure that the training-time call function is
     saved as a standalone endpoint in the artifact, and provide its name
-    to the `ReloadedLayer` via the `call_training_endpoint` argument.
+    to the `TFSMLayer` via the `call_training_endpoint` argument.
     """
 
     def __init__(
@@ -477,9 +568,13 @@ class ReloadedLayer(base_layer.Layer):
             self.call_endpoint_fn = self._reloaded_obj.signatures[call_endpoint]
         else:
             raise ValueError(
-                f"The endpoint '{call_endpoint}' is neither an "
-                "attribute of the reloaded SavedModel, nor an entry "
-                "in the `signatures` field of the reloaded SavedModel. "
+                f"The endpoint '{call_endpoint}' "
+                "is neither an attribute of the reloaded SavedModel, "
+                "nor an entry in the `signatures` field of "
+                "the reloaded SavedModel. Select another endpoint via "
+                "the `call_endpoint` argument. Available endpoints for "
+                "this SavedModel: "
+                f"{list(self._reloaded_obj.signatures.keys())}"
             )
 
         # Resolving the training function.
@@ -494,10 +589,12 @@ class ReloadedLayer(base_layer.Layer):
                 ]
             else:
                 raise ValueError(
-                    f"The endpoint '{call_training_endpoint}' is "
-                    "neither an attribute of the reloaded SavedModel, "
+                    f"The endpoint '{call_training_endpoint}' "
+                    "is neither an attribute of the reloaded SavedModel, "
                     "nor an entry in the `signatures` field of "
-                    "the reloaded SavedModel. "
+                    "the reloaded SavedModel. Available endpoints for "
+                    "this SavedModel: "
+                    f"{list(self._reloaded_obj.signatures.keys())}"
                 )
 
         # Add trainable and non-trainable weights from the call_endpoint_fn.
@@ -506,20 +603,14 @@ class ReloadedLayer(base_layer.Layer):
             all_fns.append(self.call_training_endpoint_fn)
         tvs, ntvs = _list_variables_used_by_fns(all_fns)
         for v in tvs:
-            self._add_existing_weight(v, trainable=True)
+            self._add_existing_weight(v)
         for v in ntvs:
-            self._add_existing_weight(v, trainable=False)
+            self._add_existing_weight(v)
         self.built = True
 
-    def _add_existing_weight(self, weight, trainable):
-        """Calls add_weight() to register but not create an existing weight."""
-        self.add_weight(
-            name=weight.name,
-            shape=weight.shape,
-            dtype=weight.dtype,
-            trainable=trainable,
-            getter=lambda *_, **__: weight,
-        )
+    def _add_existing_weight(self, weight):
+        """Tracks an existing weight."""
+        self._track_variable(weight)
 
     def call(self, inputs, training=False, **kwargs):
         if training:

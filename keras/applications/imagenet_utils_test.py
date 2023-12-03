@@ -1,30 +1,15 @@
-# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for imagenet_utils."""
-
 import numpy as np
-import tensorflow.compat.v2 as tf
+import pytest
 from absl.testing import parameterized
 
 import keras
+from keras import backend
+from keras import testing
 from keras.applications import imagenet_utils as utils
-from keras.mixed_precision.policy import set_global_policy
-from keras.testing_infra import test_combinations
+from keras.mixed_precision import set_dtype_policy
 
 
-class TestImageNetUtils(test_combinations.TestCase):
+class TestImageNetUtils(testing.TestCase, parameterized.TestCase):
     def test_preprocess_input(self):
         # Test invalid mode check
         x = np.random.uniform(0, 255, (10, 10, 3))
@@ -69,8 +54,8 @@ class TestImageNetUtils(test_combinations.TestCase):
         for mode in ["torch", "tf"]:
             x = np.random.uniform(0, 255, (2, 10, 10, 3))
             xint = x.astype("int")
-            x2 = utils.preprocess_input(x, mode=mode)
-            xint2 = utils.preprocess_input(xint)
+            x2 = utils.preprocess_input(x, "channels_last", mode=mode)
+            xint2 = utils.preprocess_input(xint, "channels_last")
             self.assertAllClose(x, x2)
             self.assertNotEqual(xint.astype("float").max(), xint2.max())
 
@@ -80,7 +65,7 @@ class TestImageNetUtils(test_combinations.TestCase):
         x2 = utils.preprocess_input(
             x, data_format="channels_last", mode="caffe"
         )
-        xint2 = utils.preprocess_input(xint)
+        xint2 = utils.preprocess_input(xint, data_format="channels_last")
         self.assertAllClose(x, x2[..., ::-1])
         self.assertNotEqual(xint.astype("float").max(), xint2.max())
 
@@ -91,9 +76,14 @@ class TestImageNetUtils(test_combinations.TestCase):
             {"testcase_name": "mode_caffe", "mode": "caffe"},
         ]
     )
+    @pytest.mark.requires_trainable_backend
     def test_preprocess_input_symbolic(self, mode):
+        backend_data_format = backend.image_data_format()
         # Test image batch
-        x = np.random.uniform(0, 255, (2, 10, 10, 3))
+        if backend_data_format == "channels_last":
+            x = np.random.uniform(0, 255, (2, 10, 10, 3))
+        elif backend_data_format == "channels_first":
+            x = np.random.uniform(0, 255, (2, 3, 10, 10))
         inputs = keras.layers.Input(shape=x.shape[1:])
         outputs = keras.layers.Lambda(
             lambda x: utils.preprocess_input(x, mode=mode),
@@ -102,6 +92,8 @@ class TestImageNetUtils(test_combinations.TestCase):
         model = keras.Model(inputs, outputs)
         self.assertEqual(model.predict(x).shape, x.shape)
 
+        x = np.random.uniform(0, 255, (2, 10, 10, 3))
+        inputs = keras.layers.Input(shape=x.shape[1:])
         outputs1 = keras.layers.Lambda(
             lambda x: utils.preprocess_input(x, "channels_last", mode=mode),
             output_shape=x.shape[1:],
@@ -119,7 +111,10 @@ class TestImageNetUtils(test_combinations.TestCase):
         self.assertAllClose(out1, out2.transpose(0, 2, 3, 1))
 
         # Test single image
-        x = np.random.uniform(0, 255, (10, 10, 3))
+        if backend_data_format == "channels_last":
+            x = np.random.uniform(0, 255, (10, 10, 3))
+        elif backend_data_format == "channels_first":
+            x = np.random.uniform(0, 255, (3, 10, 10))
         inputs = keras.layers.Input(shape=x.shape)
         outputs = keras.layers.Lambda(
             lambda x: utils.preprocess_input(x, mode=mode), output_shape=x.shape
@@ -127,6 +122,8 @@ class TestImageNetUtils(test_combinations.TestCase):
         model = keras.Model(inputs, outputs)
         self.assertEqual(model.predict(x[np.newaxis])[0].shape, x.shape)
 
+        x = np.random.uniform(0, 255, (10, 10, 3))
+        inputs = keras.layers.Input(shape=x.shape)
         outputs1 = keras.layers.Lambda(
             lambda x: utils.preprocess_input(x, "channels_last", mode=mode),
             output_shape=x.shape,
@@ -151,11 +148,7 @@ class TestImageNetUtils(test_combinations.TestCase):
         ]
     )
     def test_preprocess_input_symbolic_mixed_precision(self, mode):
-        if not tf.__internal__.tf2.enabled():
-            self.skipTest(
-                "The global policy can only be tested in TensorFlow 2"
-            )
-        set_global_policy("mixed_float16")
+        set_dtype_policy("mixed_float16")
         shape = (20, 20, 3)
         inputs = keras.layers.Input(shape=shape)
         try:
@@ -164,7 +157,7 @@ class TestImageNetUtils(test_combinations.TestCase):
                 output_shape=shape,
             )(inputs)
         finally:
-            set_global_policy("float32")
+            set_dtype_policy("float32")
 
     @parameterized.named_parameters(
         [
@@ -319,7 +312,3 @@ class TestImageNetUtils(test_combinations.TestCase):
             ),
             (3, None, None),
         )
-
-
-if __name__ == "__main__":
-    tf.test.main()

@@ -1,680 +1,785 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for convolutional layers."""
-
-
 import numpy as np
-import tensorflow.compat.v2 as tf
+import pytest
 from absl.testing import parameterized
+from numpy.lib.stride_tricks import as_strided
 
-import keras
-from keras.testing_infra import test_combinations
-from keras.testing_infra import test_utils
-
-# isort: off
-from tensorflow.python.framework import (
-    test_util as tf_test_utils,
-)
+from keras import layers
+from keras import testing
 
 
-@test_combinations.run_all_keras_modes
-class Conv1DTest(test_combinations.TestCase):
-    def _run_test(self, kwargs, expected_output_shape):
-        num_samples = 2
-        stack_size = 3
-        length = 7
-
-        with self.cached_session():
-            test_utils.layer_test(
-                keras.layers.Conv1D,
-                kwargs=kwargs,
-                input_shape=(num_samples, length, stack_size),
-                expected_output_shape=expected_output_shape,
-            )
-
-    def _run_test_extra_batch_dim(self, kwargs, expected_output_shape):
-        batch_shape = (2, 11)
-        stack_size = 3
-        length = 7
-
-        with self.cached_session():
-            if expected_output_shape is not None:
-                expected_output_shape = (None,) + expected_output_shape
-
-            test_utils.layer_test(
-                keras.layers.Conv1D,
-                kwargs=kwargs,
-                input_shape=batch_shape + (length, stack_size),
-                expected_output_shape=expected_output_shape,
-            )
-
-    @parameterized.named_parameters(
-        ("padding_valid", {"padding": "valid"}, (None, 5, 2)),
-        ("padding_same", {"padding": "same"}, (None, 7, 2)),
-        (
-            "padding_same_dilation_2",
-            {"padding": "same", "dilation_rate": 2},
-            (None, 7, 2),
-        ),
-        (
-            "padding_same_dilation_3",
-            {"padding": "same", "dilation_rate": 3},
-            (None, 7, 2),
-        ),
-        ("padding_causal", {"padding": "causal"}, (None, 7, 2)),
-        ("strides", {"strides": 2}, (None, 3, 2)),
-        ("dilation_rate", {"dilation_rate": 2}, (None, 3, 2)),
-        ("group", {"groups": 3, "filters": 6}, (None, 5, 6)),
-    )
-    def test_conv1d(self, kwargs, expected_output_shape):
-        kwargs["filters"] = kwargs.get("filters", 2)
-        kwargs["kernel_size"] = 3
-        self._run_test(kwargs, expected_output_shape)
-        self._run_test_extra_batch_dim(kwargs, expected_output_shape)
-
-    def test_conv1d_regularizers(self):
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "kernel_regularizer": "l2",
-            "bias_regularizer": "l2",
-            "activity_regularizer": "l2",
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.Conv1D(**kwargs)
-            layer.build((None, 5, 2))
-            self.assertEqual(len(layer.losses), 2)
-            layer(keras.backend.variable(np.ones((1, 5, 2))))
-            self.assertEqual(len(layer.losses), 3)
-
-    def test_conv1d_constraints(self):
-        k_constraint = lambda x: x
-        b_constraint = lambda x: x
-
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "kernel_constraint": k_constraint,
-            "bias_constraint": b_constraint,
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.Conv1D(**kwargs)
-            layer.build((None, 5, 2))
-            self.assertEqual(layer.kernel.constraint, k_constraint)
-            self.assertEqual(layer.bias.constraint, b_constraint)
-
-    def test_conv1d_recreate_conv(self):
-        with self.cached_session():
-            layer = keras.layers.Conv1D(
-                filters=1,
-                kernel_size=3,
-                strides=1,
-                dilation_rate=2,
-                padding="causal",
-            )
-            inpt1 = np.random.normal(size=[1, 2, 1])
-            inpt2 = np.random.normal(size=[1, 1, 1])
-            outp1_shape = layer(inpt1).shape
-            _ = layer(inpt2).shape
-            self.assertEqual(outp1_shape, layer(inpt1).shape)
-
-    def test_conv1d_recreate_conv_unknown_dims(self):
-        with self.cached_session():
-            layer = keras.layers.Conv1D(
-                filters=1,
-                kernel_size=3,
-                strides=1,
-                dilation_rate=2,
-                padding="causal",
-            )
-
-            inpt1 = np.random.normal(size=[1, 9, 1]).astype(np.float32)
-            inpt2 = np.random.normal(size=[1, 2, 1]).astype(np.float32)
-            outp1_shape = layer(inpt1).shape
-
-            @tf.function(input_signature=[tf.TensorSpec([1, None, 1])])
-            def fn(inpt):
-                return layer(inpt)
-
-            fn(inpt2)
-            self.assertEqual(outp1_shape, layer(inpt1).shape)
-
-    def test_conv1d_invalid_output_shapes(self):
-        kwargs = {"filters": 2, "kernel_size": 20}
-        with self.assertRaisesRegex(
-            ValueError, r"""One of the dimensions in the output is <= 0"""
-        ):
-            layer = keras.layers.Conv1D(**kwargs)
-            layer.build((None, 5, 2))
-
-    def test_conv1d_invalid_strides_and_dilation_rate(self):
-        kwargs = {"strides": 2, "dilation_rate": 2}
-        with self.assertRaisesRegex(
-            ValueError, r"""`strides > 1` not supported in conjunction"""
-        ):
-            keras.layers.Conv1D(filters=1, kernel_size=2, **kwargs)
+def _same_padding(input_size, kernel_size, stride):
+    if input_size % stride == 0:
+        padding = max(kernel_size - stride, 0)
+    else:
+        padding = max(kernel_size - (input_size % stride), 0)
+    return padding // 2, padding - padding // 2
 
 
-@test_combinations.run_all_keras_modes
-class Conv2DTest(test_combinations.TestCase):
-    def _run_test(self, kwargs, expected_output_shape, spatial_shape=(7, 6)):
-        num_samples = 2
-        stack_size = 3
-        num_row, num_col = spatial_shape
-        input_data = None
-        # Generate valid input data.
-        if None in spatial_shape:
-            input_data_shape = (
-                num_samples,
-                num_row or 7,
-                num_col or 6,
-                stack_size,
-            )
-            input_data = 10 * np.random.random(input_data_shape).astype(
-                np.float32
-            )
+def np_conv1d(
+    x,
+    kernel_weights,
+    bias_weights,
+    strides,
+    padding,
+    data_format,
+    dilation_rate,
+    groups,
+):
+    if data_format == "channels_first":
+        x = x.swapaxes(1, 2)
+    if isinstance(strides, (tuple, list)):
+        h_stride = strides[0]
+    else:
+        h_stride = strides
+    if isinstance(dilation_rate, (tuple, list)):
+        dilation_rate = dilation_rate[0]
+    kernel_size, ch_in, ch_out = kernel_weights.shape
 
-        with self.cached_session():
-            test_utils.layer_test(
-                keras.layers.Conv2D,
-                kwargs=kwargs,
-                input_shape=(num_samples, num_row, num_col, stack_size),
-                input_data=input_data,
-                expected_output_shape=expected_output_shape,
-            )
-
-    def _run_test_extra_batch_dim(
-        self, kwargs, expected_output_shape, spatial_shape=(7, 6)
-    ):
-        batch_shape = (2, 11)
-        stack_size = 3
-        num_row, num_col = spatial_shape
-        input_data = None
-        # Generate valid input data.
-        if None in spatial_shape:
-            input_data_shape = batch_shape + (
-                num_row or 7,
-                num_col or 6,
-                stack_size,
-            )
-            input_data = 10 * np.random.random(input_data_shape).astype(
-                np.float32
-            )
-
-        with self.cached_session():
-            if expected_output_shape is not None:
-                expected_output_shape = (None,) + expected_output_shape
-            test_utils.layer_test(
-                keras.layers.Conv2D,
-                kwargs=kwargs,
-                input_shape=batch_shape + (num_row, num_col, stack_size),
-                input_data=input_data,
-                expected_output_shape=expected_output_shape,
-            )
-
-    @parameterized.named_parameters(
-        ("padding_valid", {"padding": "valid"}, (None, 5, 4, 2)),
-        ("padding_same", {"padding": "same"}, (None, 7, 6, 2)),
-        (
-            "padding_same_dilation_2",
-            {"padding": "same", "dilation_rate": 2},
-            (None, 7, 6, 2),
-        ),
-        ("strides", {"strides": (2, 2)}, (None, 3, 2, 2)),
-        ("dilation_rate", {"dilation_rate": (2, 2)}, (None, 3, 2, 2)),
-        # Only runs on GPU with CUDA, channels_first is not supported on CPU.
-        # TODO(b/62340061): Support channels_first on CPU.
-        ("data_format", {"data_format": "channels_first"}, None, True),
-        ("group", {"groups": 3, "filters": 6}, (None, 5, 4, 6), False),
-        (
-            "dilation_2_unknown_width",
-            {"dilation_rate": (2, 2)},
-            (None, None, 2, 2),
-            False,
-            (None, 6),
-        ),
-        (
-            "dilation_2_unknown_height",
-            {"dilation_rate": (2, 2)},
-            (None, 3, None, 2),
-            False,
-            (7, None),
-        ),
-    )
-    def test_conv2d(
-        self,
-        kwargs,
-        expected_output_shape=None,
-        requires_gpu=False,
-        spatial_shape=(7, 6),
-    ):
-        kwargs["filters"] = kwargs.get("filters", 2)
-        kwargs["kernel_size"] = (3, 3)
-        if not requires_gpu or tf.test.is_gpu_available(cuda_only=True):
-            self._run_test(kwargs, expected_output_shape, spatial_shape)
-            self._run_test_extra_batch_dim(
-                kwargs, expected_output_shape, spatial_shape
-            )
-
-    def test_conv2d_regularizers(self):
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "kernel_regularizer": "l2",
-            "bias_regularizer": "l2",
-            "activity_regularizer": "l2",
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.Conv2D(**kwargs)
-            layer.build((None, 5, 5, 2))
-            self.assertEqual(len(layer.losses), 2)
-            layer(keras.backend.variable(np.ones((1, 5, 5, 2))))
-            self.assertEqual(len(layer.losses), 3)
-
-    def test_conv2d_constraints(self):
-        k_constraint = lambda x: x
-        b_constraint = lambda x: x
-
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "kernel_constraint": k_constraint,
-            "bias_constraint": b_constraint,
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.Conv2D(**kwargs)
-            layer.build((None, 5, 5, 2))
-            self.assertEqual(layer.kernel.constraint, k_constraint)
-            self.assertEqual(layer.bias.constraint, b_constraint)
-
-    def test_conv2d_zero_kernel_size(self):
-        kwargs = {"filters": 2, "kernel_size": 0}
-        with self.assertRaises(ValueError):
-            keras.layers.Conv2D(**kwargs)
-
-    def test_conv2d_invalid_output_shapes(self):
-        kwargs = {"filters": 2, "kernel_size": 20}
-        with self.assertRaisesRegex(
-            ValueError, r"""One of the dimensions in the output is <= 0"""
-        ):
-            layer = keras.layers.Conv2D(**kwargs)
-            layer.build((None, 5, 5, 2))
-
-    def test_conv2d_invalid_strides_and_dilation_rate(self):
-        kwargs = {"strides": [1, 2], "dilation_rate": [2, 1]}
-        with self.assertRaisesRegex(
-            ValueError, r"""`strides > 1` not supported in conjunction"""
-        ):
-            keras.layers.Conv2D(filters=1, kernel_size=2, **kwargs)
-
-
-@test_combinations.run_all_keras_modes
-class Conv3DTest(test_combinations.TestCase):
-    def _run_test(self, kwargs, expected_output_shape, validate_training=True):
-        num_samples = 2
-        stack_size = 3
-        num_row = 7
-        num_col = 6
-        depth = 5
-
-        with self.cached_session():
-            test_utils.layer_test(
-                keras.layers.Conv3D,
-                kwargs=kwargs,
-                input_shape=(num_samples, depth, num_row, num_col, stack_size),
-                expected_output_shape=expected_output_shape,
-                validate_training=validate_training,
-            )
-
-    def _run_test_extra_batch_dim(
-        self, kwargs, expected_output_shape, validate_training=True
-    ):
-        batch_shape = (2, 11)
-        stack_size = 3
-        num_row = 7
-        num_col = 6
-        depth = 5
-
-        with self.cached_session():
-            if expected_output_shape is not None:
-                expected_output_shape = (None,) + expected_output_shape
-
-            test_utils.layer_test(
-                keras.layers.Conv3D,
-                kwargs=kwargs,
-                input_shape=batch_shape + (depth, num_row, num_col, stack_size),
-                expected_output_shape=expected_output_shape,
-                validate_training=validate_training,
-            )
-
-    @parameterized.named_parameters(
-        ("padding_valid", {"padding": "valid"}, (None, 3, 5, 4, 2)),
-        ("padding_same", {"padding": "same"}, (None, 5, 7, 6, 2)),
-        ("strides", {"strides": (2, 2, 2)}, (None, 2, 3, 2, 2)),
-        ("dilation_rate", {"dilation_rate": (2, 2, 2)}, (None, 1, 3, 2, 2)),
-        # Only runs on GPU with CUDA, channels_first is not supported on CPU.
-        # TODO(b/62340061): Support channels_first on CPU.
-        ("data_format", {"data_format": "channels_first"}, None, True),
-        ("group", {"groups": 3, "filters": 6}, (None, 3, 5, 4, 6)),
-    )
-    def test_conv3d(
-        self, kwargs, expected_output_shape=None, requires_gpu=False
-    ):
-        kwargs["filters"] = kwargs.get("filters", 2)
-        kwargs["kernel_size"] = (3, 3, 3)
-        # train_on_batch currently fails with XLA enabled on GPUs
-        test_training = (
-            "groups" not in kwargs or not tf_test_utils.is_xla_enabled()
+    if dilation_rate > 1:
+        new_kernel_size = kernel_size + (dilation_rate - 1) * (kernel_size - 1)
+        new_kernel_weights = np.zeros(
+            (new_kernel_size, ch_in, ch_out), dtype=kernel_weights.dtype
         )
-        if not requires_gpu or tf.test.is_gpu_available(cuda_only=True):
-            self._run_test(kwargs, expected_output_shape, test_training)
-            self._run_test_extra_batch_dim(
-                kwargs, expected_output_shape, test_training
-            )
+        new_kernel_weights[::dilation_rate] = kernel_weights
+        kernel_weights = new_kernel_weights
+        kernel_size = kernel_weights.shape[0]
 
-    def test_conv3d_regularizers(self):
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "kernel_regularizer": "l2",
-            "bias_regularizer": "l2",
-            "activity_regularizer": "l2",
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.Conv3D(**kwargs)
-            layer.build((None, 5, 5, 5, 2))
-            self.assertEqual(len(layer.losses), 2)
-            self.assertEqual(len(layer.losses), 2)
-            layer(keras.backend.variable(np.ones((1, 5, 5, 5, 2))))
-            self.assertEqual(len(layer.losses), 3)
+    if padding != "valid":
+        n_batch, h_x, _ = x.shape
+        h_pad = _same_padding(h_x, kernel_size, h_stride)
+        npad = [(0, 0)] * x.ndim
+        if padding == "causal":
+            npad[1] = (h_pad[0] + h_pad[1], 0)
+        else:
+            npad[1] = h_pad
+        x = np.pad(x, pad_width=npad, mode="constant", constant_values=0)
 
-    def test_conv3d_constraints(self):
-        k_constraint = lambda x: x
-        b_constraint = lambda x: x
+    n_batch, h_x, _ = x.shape
+    h_out = int((h_x - kernel_size) / h_stride) + 1
 
-        kwargs = {
-            "filters": 3,
-            "kernel_size": 3,
-            "padding": "valid",
-            "kernel_constraint": k_constraint,
-            "bias_constraint": b_constraint,
-            "strides": 1,
-        }
-        with self.cached_session():
-            layer = keras.layers.Conv3D(**kwargs)
-            layer.build((None, 5, 5, 5, 2))
-            self.assertEqual(layer.kernel.constraint, k_constraint)
-            self.assertEqual(layer.bias.constraint, b_constraint)
+    kernel_weights = kernel_weights.reshape(-1, ch_out)
+    bias_weights = bias_weights.reshape(1, ch_out)
 
-    def test_conv3d_dynamic_shape(self):
-        input_data = np.random.random((1, 3, 3, 3, 3)).astype(np.float32)
-        with self.cached_session():
-            # Won't raise error here.
-            test_utils.layer_test(
-                keras.layers.Conv3D,
-                kwargs={
-                    "data_format": "channels_last",
-                    "filters": 3,
-                    "kernel_size": 3,
-                },
-                input_shape=(None, None, None, None, 3),
-                input_data=input_data,
-            )
-            if tf.test.is_gpu_available(cuda_only=True):
-                test_utils.layer_test(
-                    keras.layers.Conv3D,
-                    kwargs={
-                        "data_format": "channels_first",
-                        "filters": 3,
-                        "kernel_size": 3,
-                    },
-                    input_shape=(None, 3, None, None, None),
-                    input_data=input_data,
-                )
-
-    def test_conv3d_invalid_output_shapes(self):
-        kwargs = {"filters": 2, "kernel_size": 20}
-        with self.assertRaisesRegex(
-            ValueError, r"""One of the dimensions in the output is <= 0"""
-        ):
-            layer = keras.layers.Conv3D(**kwargs)
-            layer.build((None, 5, 5, 5, 2))
-
-    def test_conv3d_zero_dim_output(self):
-        conv = keras.layers.Convolution3DTranspose(2, [3, 3, 3], padding="same")
-        x = tf.random.uniform([1, 32, 32, 0, 3], dtype=tf.float32)
-        # The layer doesn't crash with 0 dim input
-        _ = conv(x)
-
-    def test_conv3d_invalid_strides_and_dilation_rate(self):
-        kwargs = {"strides": [1, 1, 2], "dilation_rate": [1, 2, 1]}
-        with self.assertRaisesRegex(
-            ValueError, r"""`strides > 1` not supported in conjunction"""
-        ):
-            keras.layers.Conv3D(filters=1, kernel_size=2, **kwargs)
+    out_grps = []
+    for grp in range(1, groups + 1):
+        x_in = x[..., (grp - 1) * ch_in : grp * ch_in]
+        stride_shape = (n_batch, h_out, kernel_size, ch_in)
+        strides = (
+            x_in.strides[0],
+            h_stride * x_in.strides[1],
+            x_in.strides[1],
+            x_in.strides[2],
+        )
+        inner_dim = kernel_size * ch_in
+        x_strided = as_strided(
+            x_in, shape=stride_shape, strides=strides
+        ).reshape(n_batch, h_out, inner_dim)
+        ch_out_groups = ch_out // groups
+        kernel_weights_grp = kernel_weights[
+            ..., (grp - 1) * ch_out_groups : grp * ch_out_groups
+        ]
+        bias_weights_grp = bias_weights[
+            ..., (grp - 1) * ch_out_groups : grp * ch_out_groups
+        ]
+        out_grps.append(x_strided @ kernel_weights_grp + bias_weights_grp)
+    out = np.concatenate(out_grps, axis=-1)
+    if data_format == "channels_first":
+        out = out.swapaxes(1, 2)
+    return out
 
 
-@test_combinations.run_all_keras_modes(always_skip_v1=True)
-class GroupedConvTest(test_combinations.TestCase):
-    @parameterized.named_parameters(
-        ("Conv1D", keras.layers.Conv1D),
-        ("Conv2D", keras.layers.Conv2D),
-        ("Conv3D", keras.layers.Conv3D),
+def np_conv2d(
+    x,
+    kernel_weights,
+    bias_weights,
+    strides,
+    padding,
+    data_format,
+    dilation_rate,
+    groups,
+):
+    if data_format == "channels_first":
+        x = x.transpose((0, 2, 3, 1))
+    if isinstance(strides, (tuple, list)):
+        h_stride, w_stride = strides
+    else:
+        h_stride = strides
+        w_stride = strides
+    if isinstance(dilation_rate, (tuple, list)):
+        h_dilation, w_dilation = dilation_rate
+    else:
+        h_dilation = dilation_rate
+        w_dilation = dilation_rate
+    h_kernel, w_kernel, ch_in, ch_out = kernel_weights.shape
+
+    if h_dilation > 1 or w_dilation > 1:
+        new_h_kernel = h_kernel + (h_dilation - 1) * (h_kernel - 1)
+        new_w_kernel = w_kernel + (w_dilation - 1) * (w_kernel - 1)
+        new_kenel_size_tuple = (new_h_kernel, new_w_kernel)
+        new_kernel_weights = np.zeros(
+            (*new_kenel_size_tuple, ch_in, ch_out),
+            dtype=kernel_weights.dtype,
+        )
+        new_kernel_weights[::h_dilation, ::w_dilation] = kernel_weights
+        kernel_weights = new_kernel_weights
+        h_kernel, w_kernel = kernel_weights.shape[:2]
+
+    if padding == "same":
+        n_batch, h_x, w_x, _ = x.shape
+        h_pad = _same_padding(h_x, h_kernel, h_stride)
+        w_pad = _same_padding(w_x, w_kernel, w_stride)
+        npad = [(0, 0)] * x.ndim
+        npad[1] = h_pad
+        npad[2] = w_pad
+        x = np.pad(x, pad_width=npad, mode="constant", constant_values=0)
+
+    n_batch, h_x, w_x, _ = x.shape
+    h_out = int((h_x - h_kernel) / h_stride) + 1
+    w_out = int((w_x - w_kernel) / w_stride) + 1
+
+    out_grps = []
+    for grp in range(1, groups + 1):
+        x_in = x[..., (grp - 1) * ch_in : grp * ch_in]
+        stride_shape = (n_batch, h_out, w_out, h_kernel, w_kernel, ch_in)
+        strides = (
+            x_in.strides[0],
+            h_stride * x_in.strides[1],
+            w_stride * x_in.strides[2],
+            x_in.strides[1],
+            x_in.strides[2],
+            x_in.strides[3],
+        )
+        inner_dim = h_kernel * w_kernel * ch_in
+        x_strided = as_strided(
+            x_in, shape=stride_shape, strides=strides
+        ).reshape(-1, inner_dim)
+        ch_out_groups = ch_out // groups
+        kernel_weights_grp = kernel_weights[
+            ..., (grp - 1) * ch_out_groups : grp * ch_out_groups
+        ].reshape(-1, ch_out_groups)
+        bias_weights_grp = bias_weights[
+            ..., (grp - 1) * ch_out_groups : grp * ch_out_groups
+        ]
+        out_grps.append(x_strided @ kernel_weights_grp + bias_weights_grp)
+    out = np.concatenate(out_grps, axis=-1).reshape(
+        n_batch, h_out, w_out, ch_out
     )
-    def test_group_conv_incorrect_use(self, layer):
-        with self.assertRaisesRegex(ValueError, "The number of filters"):
-            layer(16, 3, groups=3)
-        with self.assertRaisesRegex(ValueError, "The number of input channels"):
-            layer(16, 3, groups=4).build((32, 12, 12, 3))
+    if data_format == "channels_first":
+        out = out.transpose((0, 3, 1, 2))
+    return out
 
-    @parameterized.named_parameters(
-        ("Conv1D", keras.layers.Conv1D, (32, 12, 32)),
-        ("Conv2D", keras.layers.Conv2D, (32, 12, 12, 32)),
-        ("Conv3D", keras.layers.Conv3D, (32, 12, 12, 12, 32)),
+
+def np_conv3d(
+    x,
+    kernel_weights,
+    bias_weights,
+    strides,
+    padding,
+    data_format,
+    dilation_rate,
+    groups,
+):
+    if data_format == "channels_first":
+        x = x.transpose((0, 2, 3, 4, 1))
+    if isinstance(strides, (tuple, list)):
+        h_stride, w_stride, d_stride = strides
+    else:
+        h_stride = strides
+        w_stride = strides
+        d_stride = strides
+    if isinstance(dilation_rate, (tuple, list)):
+        h_dilation, w_dilation, d_dilation = dilation_rate
+    else:
+        h_dilation = dilation_rate
+        w_dilation = dilation_rate
+        d_dilation = dilation_rate
+
+    h_kernel, w_kernel, d_kernel, ch_in, ch_out = kernel_weights.shape
+
+    if h_dilation > 1 or w_dilation > 1 or d_dilation > 1:
+        new_h_kernel = h_kernel + (h_dilation - 1) * (h_kernel - 1)
+        new_w_kernel = w_kernel + (w_dilation - 1) * (w_kernel - 1)
+        new_d_kernel = d_kernel + (d_dilation - 1) * (d_kernel - 1)
+        new_kenel_size_tuple = (new_h_kernel, new_w_kernel, new_d_kernel)
+        new_kernel_weights = np.zeros(
+            (*new_kenel_size_tuple, ch_in, ch_out),
+            dtype=kernel_weights.dtype,
+        )
+        new_kernel_weights[
+            ::h_dilation, ::w_dilation, ::d_dilation
+        ] = kernel_weights
+        kernel_weights = new_kernel_weights
+        h_kernel, w_kernel, d_kernel = kernel_weights.shape[:3]
+
+    if padding == "same":
+        n_batch, h_x, w_x, d_x, _ = x.shape
+        h_pad = _same_padding(h_x, h_kernel, h_stride)
+        w_pad = _same_padding(w_x, w_kernel, w_stride)
+        d_pad = _same_padding(d_x, d_kernel, d_stride)
+        npad = [(0, 0)] * x.ndim
+        npad[1] = h_pad
+        npad[2] = w_pad
+        npad[3] = d_pad
+        x = np.pad(x, pad_width=npad, mode="constant", constant_values=0)
+
+    n_batch, h_x, w_x, d_x, _ = x.shape
+    h_out = int((h_x - h_kernel) / h_stride) + 1
+    w_out = int((w_x - w_kernel) / w_stride) + 1
+    d_out = int((d_x - d_kernel) / d_stride) + 1
+
+    out_grps = []
+    for grp in range(1, groups + 1):
+        x_in = x[..., (grp - 1) * ch_in : grp * ch_in]
+        stride_shape = (
+            n_batch,
+            h_out,
+            w_out,
+            d_out,
+            h_kernel,
+            w_kernel,
+            d_kernel,
+            ch_in,
+        )
+        strides = (
+            x_in.strides[0],
+            h_stride * x_in.strides[1],
+            w_stride * x_in.strides[2],
+            d_stride * x_in.strides[3],
+            x_in.strides[1],
+            x_in.strides[2],
+            x_in.strides[3],
+            x_in.strides[4],
+        )
+        inner_dim = h_kernel * w_kernel * d_kernel * ch_in
+        x_strided = as_strided(
+            x_in, shape=stride_shape, strides=strides
+        ).reshape(-1, inner_dim)
+        ch_out_groups = ch_out // groups
+        kernel_weights_grp = kernel_weights[
+            ..., (grp - 1) * ch_out_groups : grp * ch_out_groups
+        ].reshape(-1, ch_out_groups)
+        bias_weights_grp = bias_weights[
+            ..., (grp - 1) * ch_out_groups : grp * ch_out_groups
+        ]
+        out_grps.append(x_strided @ kernel_weights_grp + bias_weights_grp)
+    out = np.concatenate(out_grps, axis=-1).reshape(
+        n_batch, h_out, w_out, d_out, ch_out
     )
-    def test_group_conv(self, layer_cls, input_shape):
-        if tf.test.is_gpu_available(cuda_only=True):
-            with test_utils.use_gpu():
-                inputs = tf.random.uniform(shape=input_shape)
-
-                layer = layer_cls(16, 3, groups=4, use_bias=False)
-                layer.build(input_shape)
-
-                input_slices = tf.split(inputs, 4, axis=-1)
-                weight_slices = tf.split(layer.kernel, 4, axis=-1)
-                expected_outputs = tf.concat(
-                    [
-                        tf.nn.convolution(inputs, weights)
-                        for inputs, weights in zip(input_slices, weight_slices)
-                    ],
-                    axis=-1,
-                )
-                self.assertAllClose(
-                    layer(inputs), expected_outputs, rtol=3e-5, atol=3e-5
-                )
-
-    def test_group_conv_depthwise(self):
-        if tf.test.is_gpu_available(cuda_only=True):
-            with test_utils.use_gpu():
-                inputs = tf.random.uniform(shape=(3, 27, 27, 32))
-
-                layer = keras.layers.Conv2D(32, 3, groups=32, use_bias=False)
-                layer.build((3, 27, 27, 32))
-
-                weights_dw = tf.reshape(layer.kernel, [3, 3, 32, 1])
-                expected_outputs = tf.compat.v1.nn.depthwise_conv2d(
-                    inputs, weights_dw, strides=[1, 1, 1, 1], padding="VALID"
-                )
-
-                self.assertAllClose(layer(inputs), expected_outputs, rtol=1e-5)
+    if data_format == "channels_first":
+        out = out.transpose((0, 4, 1, 2, 3))
+    return out
 
 
-@test_combinations.run_all_keras_modes
-class ConvSequentialTest(test_combinations.TestCase):
-    def _run_test(
+class ConvBasicTest(testing.TestCase, parameterized.TestCase):
+    @parameterized.parameters(
+        {
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+            "input_shape": (3, 5, 4),
+            "output_shape": (3, 4, 5),
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2,),
+            "groups": 2,
+            "input_shape": (3, 4, 4),
+            "output_shape": (3, 4, 6),
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "causal",
+            "data_format": "channels_last",
+            "dilation_rate": (2,),
+            "groups": 2,
+            "input_shape": (3, 4, 4),
+            "output_shape": (3, 4, 6),
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": (2,),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 2,
+            "input_shape": (3, 5, 4),
+            "output_shape": (3, 2, 6),
+        },
+    )
+    @pytest.mark.requires_trainable_backend
+    def test_conv1d_basic(
         self,
-        conv_layer_cls,
-        kwargs,
-        input_shape1,
-        input_shape2,
-        expected_output_shape1,
-        expected_output_shape2,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        groups,
+        input_shape,
+        output_shape,
     ):
-        kwargs["filters"] = 1
-        kwargs["kernel_size"] = 3
-        kwargs["dilation_rate"] = 2
-        with self.cached_session():
-            layer = conv_layer_cls(**kwargs)
-            output1 = layer(np.zeros(input_shape1))
-            self.assertEqual(output1.shape, expected_output_shape1)
-            output2 = layer(np.zeros(input_shape2))
-            self.assertEqual(output2.shape, expected_output_shape2)
+        self.run_layer_test(
+            layers.Conv1D,
+            init_kwargs={
+                "filters": filters,
+                "kernel_size": kernel_size,
+                "strides": strides,
+                "padding": padding,
+                "data_format": data_format,
+                "dilation_rate": dilation_rate,
+                "groups": groups,
+            },
+            input_shape=input_shape,
+            expected_output_shape=output_shape,
+            expected_num_trainable_weights=2,
+            expected_num_non_trainable_weights=0,
+            expected_num_losses=0,
+            supports_masking=False,
+        )
 
-    @parameterized.named_parameters(
-        (
-            "padding_valid",
-            {"padding": "valid"},
-            (1, 8, 2),
-            (1, 5, 2),
-            (1, 4, 1),
-            (1, 1, 1),
-        ),
-        (
-            "padding_same",
-            {"padding": "same"},
-            (1, 8, 2),
-            (1, 5, 2),
-            (1, 8, 1),
-            (1, 5, 1),
-        ),
-        (
-            "padding_causal",
-            {"padding": "causal"},
-            (1, 8, 2),
-            (1, 5, 2),
-            (1, 8, 1),
-            (1, 5, 1),
-        ),
+    @parameterized.parameters(
+        {
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+            "input_shape": (3, 5, 5, 4),
+            "output_shape": (3, 4, 4, 5),
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 2),
+            "groups": 2,
+            "input_shape": (3, 4, 4, 4),
+            "output_shape": (3, 4, 4, 6),
+        },
+        {
+            "filters": 6,
+            "kernel_size": (2, 2),
+            "strides": (2, 1),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": (1, 1),
+            "groups": 2,
+            "input_shape": (3, 5, 5, 4),
+            "output_shape": (3, 2, 4, 6),
+        },
+    )
+    @pytest.mark.requires_trainable_backend
+    def test_conv2d_basic(
+        self,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        groups,
+        input_shape,
+        output_shape,
+    ):
+        self.run_layer_test(
+            layers.Conv2D,
+            init_kwargs={
+                "filters": filters,
+                "kernel_size": kernel_size,
+                "strides": strides,
+                "padding": padding,
+                "data_format": data_format,
+                "dilation_rate": dilation_rate,
+                "groups": groups,
+            },
+            input_shape=input_shape,
+            expected_output_shape=output_shape,
+            expected_num_trainable_weights=2,
+            expected_num_non_trainable_weights=0,
+            expected_num_losses=0,
+            supports_masking=False,
+        )
+
+    @parameterized.parameters(
+        {
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+            "input_shape": (3, 5, 5, 5, 4),
+            "output_shape": (3, 4, 4, 4, 5),
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 2, 2),
+            "groups": 2,
+            "input_shape": (3, 4, 4, 4, 4),
+            "output_shape": (3, 4, 4, 4, 6),
+        },
+        {
+            "filters": 6,
+            "kernel_size": (2, 2, 3),
+            "strides": (2, 1, 2),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": (1, 1, 1),
+            "groups": 2,
+            "input_shape": (3, 5, 5, 5, 4),
+            "output_shape": (3, 2, 4, 2, 6),
+        },
+    )
+    @pytest.mark.requires_trainable_backend
+    def test_conv3d_basic(
+        self,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        groups,
+        input_shape,
+        output_shape,
+    ):
+        self.run_layer_test(
+            layers.Conv3D,
+            init_kwargs={
+                "filters": filters,
+                "kernel_size": kernel_size,
+                "strides": strides,
+                "padding": padding,
+                "data_format": data_format,
+                "dilation_rate": dilation_rate,
+                "groups": groups,
+            },
+            input_shape=input_shape,
+            expected_output_shape=output_shape,
+            expected_num_trainable_weights=2,
+            expected_num_non_trainable_weights=0,
+            expected_num_losses=0,
+            supports_masking=False,
+        )
+
+    def test_bad_init_args(self):
+        # `filters` is not positive.
+        with self.assertRaises(ValueError):
+            layers.Conv1D(filters=0, kernel_size=1)
+
+        # `kernel_size` has 0.
+        with self.assertRaises(ValueError):
+            layers.Conv2D(filters=2, kernel_size=(1, 0))
+
+        # `strides` has 0.
+        with self.assertRaises(ValueError):
+            layers.Conv2D(filters=2, kernel_size=(2, 2), strides=(1, 0))
+
+        # `dilation_rate > 1` while `strides > 1`.
+        with self.assertRaises(ValueError):
+            layers.Conv2D(
+                filters=2, kernel_size=(2, 2), strides=2, dilation_rate=(2, 1)
+            )
+
+        # `filters` cannot be divided by `groups`.
+        with self.assertRaises(ValueError):
+            layers.Conv2D(filters=5, kernel_size=(2, 2), groups=2)
+
+
+class ConvCorrectnessTest(testing.TestCase, parameterized.TestCase):
+    @parameterized.parameters(
+        {
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2,),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "causal",
+            "data_format": "channels_last",
+            "dilation_rate": (2,),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": (2,),
+            "strides": (2,),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": (2,),
+            "strides": (2,),
+            "padding": "valid",
+            "data_format": "channels_first",
+            "dilation_rate": 1,
+            "groups": 2,
+        },
     )
     def test_conv1d(
         self,
-        kwargs,
-        input_shape1,
-        input_shape2,
-        expected_output_shape1,
-        expected_output_shape2,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        groups,
     ):
-        self._run_test(
-            keras.layers.Conv1D,
-            kwargs,
-            input_shape1,
-            input_shape2,
-            expected_output_shape1,
-            expected_output_shape2,
+        layer = layers.Conv1D(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            groups=groups,
         )
 
-    @parameterized.named_parameters(
-        (
-            "padding_valid",
-            {"padding": "valid"},
-            (1, 7, 6, 2),
-            (1, 6, 5, 2),
-            (1, 3, 2, 1),
-            (1, 2, 1, 1),
-        ),
-        (
-            "padding_same",
-            {"padding": "same"},
-            (1, 7, 6, 2),
-            (1, 6, 5, 2),
-            (1, 7, 6, 1),
-            (1, 6, 5, 1),
-        ),
+        inputs = np.random.normal(size=[2, 8, 4])
+        layer.build(input_shape=inputs.shape)
+
+        kernel_shape = layer.kernel.shape
+        kernel_weights = np.random.normal(size=kernel_shape)
+        bias_weights = np.random.normal(size=(filters,))
+        layer.kernel.assign(kernel_weights)
+        layer.bias.assign(bias_weights)
+
+        outputs = layer(inputs)
+        expected = np_conv1d(
+            inputs,
+            kernel_weights,
+            bias_weights,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            groups=groups,
+        )
+        self.assertAllClose(outputs, expected)
+
+    @parameterized.parameters(
+        {
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+        },
+        {
+            "filters": 4,
+            "kernel_size": 3,
+            "strides": 2,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 2),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 3),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": (4, 3),
+            "strides": (2, 1),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": (1, 1),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": (4, 3),
+            "strides": (2, 1),
+            "padding": "valid",
+            "data_format": "channels_first",
+            "dilation_rate": (1, 1),
+            "groups": 2,
+        },
     )
     def test_conv2d(
         self,
-        kwargs,
-        input_shape1,
-        input_shape2,
-        expected_output_shape1,
-        expected_output_shape2,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        groups,
     ):
-        self._run_test(
-            keras.layers.Conv2D,
-            kwargs,
-            input_shape1,
-            input_shape2,
-            expected_output_shape1,
-            expected_output_shape2,
+        layer = layers.Conv2D(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            groups=groups,
         )
 
-    @parameterized.named_parameters(
-        (
-            "padding_valid",
-            {"padding": "valid"},
-            (1, 5, 7, 6, 2),
-            (1, 8, 6, 5, 2),
-            (1, 1, 3, 2, 1),
-            (1, 4, 2, 1, 1),
-        ),
-        (
-            "padding_same",
-            {"padding": "same"},
-            (1, 5, 7, 6, 2),
-            (1, 8, 6, 5, 2),
-            (1, 5, 7, 6, 1),
-            (1, 8, 6, 5, 1),
-        ),
+        inputs = np.random.normal(size=[2, 8, 8, 4])
+        layer.build(input_shape=inputs.shape)
+
+        kernel_shape = layer.kernel.shape
+        kernel_weights = np.random.normal(size=kernel_shape)
+        bias_weights = np.random.normal(size=(filters,))
+        layer.kernel.assign(kernel_weights)
+        layer.bias.assign(bias_weights)
+
+        outputs = layer(inputs)
+        expected = np_conv2d(
+            inputs,
+            kernel_weights,
+            bias_weights,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            groups=groups,
+        )
+        self.assertAllClose(outputs, expected, rtol=5e-4)
+
+    @parameterized.parameters(
+        {
+            "filters": 5,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": 1,
+            "groups": 1,
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 2, 2),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": 2,
+            "strides": 1,
+            "padding": "same",
+            "data_format": "channels_last",
+            "dilation_rate": (2, 3, 4),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": (2, 2, 3),
+            "strides": (2, 1, 2),
+            "padding": "valid",
+            "data_format": "channels_last",
+            "dilation_rate": (1, 1, 1),
+            "groups": 2,
+        },
+        {
+            "filters": 6,
+            "kernel_size": (2, 2, 3),
+            "strides": (2, 1, 2),
+            "padding": "valid",
+            "data_format": "channels_first",
+            "dilation_rate": (1, 1, 1),
+            "groups": 2,
+        },
     )
     def test_conv3d(
         self,
-        kwargs,
-        input_shape1,
-        input_shape2,
-        expected_output_shape1,
-        expected_output_shape2,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        groups,
     ):
-        self._run_test(
-            keras.layers.Conv3D,
-            kwargs,
-            input_shape1,
-            input_shape2,
-            expected_output_shape1,
-            expected_output_shape2,
+        layer = layers.Conv3D(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            groups=groups,
         )
 
-    def test_dynamic_shape(self):
-        with self.cached_session():
-            layer = keras.layers.Conv3D(2, 3)
-            input_shape = (5, None, None, 2)
-            inputs = keras.Input(shape=input_shape)
-            x = layer(inputs)
-            # Won't raise error here with None values in input shape
-            # (b/144282043).
-            layer(x)
+        inputs = np.random.normal(size=[2, 8, 8, 8, 4])
+        layer.build(input_shape=inputs.shape)
 
+        kernel_shape = layer.kernel.shape
+        kernel_weights = np.random.normal(size=kernel_shape)
+        bias_weights = np.random.normal(size=(filters,))
+        layer.kernel.assign(kernel_weights)
+        layer.bias.assign(bias_weights)
 
-if __name__ == "__main__":
-    tf.test.main()
+        outputs = layer(inputs)
+        expected = np_conv3d(
+            inputs,
+            kernel_weights,
+            bias_weights,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            groups=groups,
+        )
+        self.assertAllClose(outputs, expected, rtol=5e-4)

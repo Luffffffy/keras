@@ -1,407 +1,328 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Tests for accuracy metrics."""
+import re
 
-import tensorflow.compat.v2 as tf
+import numpy as np
 
-from keras import Model
-from keras import layers
-from keras import metrics
-from keras.testing_infra import test_combinations
+from keras import testing
+from keras.metrics import accuracy_metrics
 
 
-@test_combinations.generate(test_combinations.combine(mode=["graph", "eager"]))
-class AccuracyTest(tf.test.TestCase):
-    def test_accuracy(self):
-        acc_obj = metrics.Accuracy(name="my_acc")
-
-        # check config
-        self.assertEqual(acc_obj.name, "my_acc")
-        self.assertTrue(acc_obj.stateful)
+class AccuracyTest(testing.TestCase):
+    def test_config(self):
+        acc_obj = accuracy_metrics.Accuracy(name="accuracy", dtype="float32")
+        self.assertEqual(acc_obj.name, "accuracy")
         self.assertEqual(len(acc_obj.variables), 2)
-        self.assertEqual(acc_obj.dtype, tf.float32)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
+        self.assertEqual(acc_obj._dtype, "float32")
 
-        # verify that correct value is returned
-        update_op = acc_obj.update_state(
-            [[1], [2], [3], [4]], [[1], [2], [3], [4]]
-        )
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
+        # Test get_config
+        acc_obj_config = acc_obj.get_config()
+        self.assertEqual(acc_obj_config["name"], "accuracy")
+        self.assertEqual(acc_obj_config["dtype"], "float32")
 
         # Check save and restore config
-        a2 = metrics.Accuracy.from_config(acc_obj.get_config())
-        self.assertEqual(a2.name, "my_acc")
-        self.assertTrue(a2.stateful)
-        self.assertEqual(len(a2.variables), 2)
-        self.assertEqual(a2.dtype, tf.float32)
+        acc_obj2 = accuracy_metrics.Accuracy.from_config(acc_obj_config)
+        self.assertEqual(acc_obj2.name, "accuracy")
+        self.assertEqual(len(acc_obj2.variables), 2)
+        self.assertEqual(acc_obj2._dtype, "float32")
 
-        # check with sample_weight
-        result_t = acc_obj([[2], [1]], [[2], [0]], sample_weight=[[0.5], [0.2]])
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.96, 2)  # 4.5/4.7
+    def test_unweighted(self):
+        acc_obj = accuracy_metrics.Accuracy(name="accuracy", dtype="float32")
+        y_true = np.array([[1], [2], [3], [4]])
+        y_pred = np.array([[0], [2], [3], [4]])
+        acc_obj.update_state(y_true, y_pred)
+        result = acc_obj.result()
+        self.assertAllClose(result, 0.75, atol=1e-3)
 
-    def test_accuracy_ragged(self):
-        acc_obj = metrics.Accuracy(name="my_acc")
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
+    def test_weighted(self):
+        acc_obj = accuracy_metrics.Accuracy(name="accuracy", dtype="float32")
+        y_true = np.array([[1], [2], [3], [4]])
+        y_pred = np.array([[0], [2], [3], [4]])
+        sample_weight = np.array([1, 1, 0, 0])
+        acc_obj.update_state(y_true, y_pred, sample_weight=sample_weight)
+        result = acc_obj.result()
+        self.assertAllClose(result, 0.5, atol=1e-3)
 
-        # verify that correct value is returned
-        rt1 = tf.ragged.constant([[1], [2], [3], [4]])
-        rt2 = tf.ragged.constant([[1], [2], [3], [4]])
-        update_op = acc_obj.update_state(rt1, rt2)
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
 
-        # check with sample_weight
-        rt1 = tf.ragged.constant([[2], [1]])
-        rt2 = tf.ragged.constant([[2], [0]])
-        sw_ragged = tf.ragged.constant([[0.5], [0.2]])
-        result_t = acc_obj(rt1, rt2, sample_weight=sw_ragged)
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.96, 2)  # 4.5/4.7
-
-    def test_binary_accuracy(self):
-        acc_obj = metrics.BinaryAccuracy(name="my_acc")
-
-        # check config
-        self.assertEqual(acc_obj.name, "my_acc")
-        self.assertTrue(acc_obj.stateful)
-        self.assertEqual(len(acc_obj.variables), 2)
-        self.assertEqual(acc_obj.dtype, tf.float32)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-
-        # verify that correct value is returned
-        update_op = acc_obj.update_state([[1], [0]], [[1], [0]])
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
-
-        # check y_pred squeeze
-        update_op = acc_obj.update_state([[1], [1]], [[[1]], [[0]]])
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertAlmostEqual(result, 0.75, 2)  # 3/4
-
-        # check y_true squeeze
-        result_t = acc_obj([[[1]], [[1]]], [[1], [0]])
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.67, 2)  # 4/6
-
-        # check with sample_weight
-        result_t = acc_obj([[1], [1]], [[1], [0]], [[0.5], [0.2]])
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.67, 2)  # 4.5/6.7
-
-    def test_binary_accuracy_ragged(self):
-        acc_obj = metrics.BinaryAccuracy(name="my_acc")
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-
-        # verify that correct value is returned
-        rt1 = tf.ragged.constant([[1], [0]])
-        rt2 = tf.ragged.constant([[1], [0]])
-        update_op = acc_obj.update_state(rt1, rt2)
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
-
-        # check y_true squeeze only supported for dense tensors and is
-        # not supported by ragged tensor (different ranks). --> error
-        rt1 = tf.ragged.constant([[[1], [1]]])
-        rt2 = tf.ragged.constant([[1], [0]])
-        with self.assertRaises(ValueError):
-            result_t = acc_obj(rt1, rt2)
-            result = self.evaluate(result_t)
-
-    def test_binary_accuracy_threshold(self):
-        acc_obj = metrics.BinaryAccuracy(threshold=0.7)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-        result_t = acc_obj([[1], [1], [0], [0]], [[0.9], [0.6], [0.4], [0.8]])
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.5, 2)
-
-    def test_binary_accuracy_threshold_ragged(self):
-        acc_obj = metrics.BinaryAccuracy(threshold=0.7)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-        rt1 = tf.ragged.constant([[1], [1], [0], [0]])
-        rt2 = tf.ragged.constant([[0.9], [0.6], [0.4], [0.8]])
-        result_t = acc_obj(rt1, rt2)
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.5, 2)
-
-    def test_categorical_accuracy(self):
-        acc_obj = metrics.CategoricalAccuracy(name="my_acc")
-
-        # check config
-        self.assertEqual(acc_obj.name, "my_acc")
-        self.assertTrue(acc_obj.stateful)
-        self.assertEqual(len(acc_obj.variables), 2)
-        self.assertEqual(acc_obj.dtype, tf.float32)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-
-        # verify that correct value is returned
-        update_op = acc_obj.update_state(
-            [[0, 0, 1], [0, 1, 0]], [[0.1, 0.1, 0.8], [0.05, 0.95, 0]]
+class BinaryAccuracyTest(testing.TestCase):
+    def test_config(self):
+        bin_acc_obj = accuracy_metrics.BinaryAccuracy(
+            name="binary_accuracy", dtype="float32"
         )
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
+        self.assertEqual(bin_acc_obj.name, "binary_accuracy")
+        self.assertEqual(len(bin_acc_obj.variables), 2)
+        self.assertEqual(bin_acc_obj._dtype, "float32")
 
-        # check with sample_weight
-        result_t = acc_obj(
-            [[0, 0, 1], [0, 1, 0]],
-            [[0.1, 0.1, 0.8], [0.05, 0, 0.95]],
-            [[0.5], [0.2]],
+        # Test get_config
+        bin_acc_obj_config = bin_acc_obj.get_config()
+        self.assertEqual(bin_acc_obj_config["name"], "binary_accuracy")
+        self.assertEqual(bin_acc_obj_config["dtype"], "float32")
+
+        # Check save and restore config
+        bin_acc_obj2 = accuracy_metrics.BinaryAccuracy.from_config(
+            bin_acc_obj_config
         )
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.93, 2)  # 2.5/2.7
+        self.assertEqual(bin_acc_obj2.name, "binary_accuracy")
+        self.assertEqual(len(bin_acc_obj2.variables), 2)
+        self.assertEqual(bin_acc_obj2._dtype, "float32")
 
-    def test_categorical_accuracy_ragged(self):
-        acc_obj = metrics.CategoricalAccuracy(name="my_acc")
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-
-        # verify that correct value is returned
-        rt1 = tf.ragged.constant([[0, 0, 1], [0, 1, 0]])
-        rt2 = tf.ragged.constant([[0.1, 0.1, 0.8], [0.05, 0.95, 0]])
-        update_op = acc_obj.update_state(rt1, rt2)
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
-
-        # check with sample_weight
-        rt1 = tf.ragged.constant([[0, 0, 1], [0, 1, 0]])
-        rt2 = tf.ragged.constant([[0.1, 0.1, 0.8], [0.05, 0, 0.95]])
-        sample_weight = tf.ragged.constant([[0.5], [0.2]])
-        with self.assertRaises(tf.errors.InvalidArgumentError):
-            result_t = acc_obj(rt1, rt2, sample_weight)
-            result = self.evaluate(result_t)
-
-    def test_sparse_categorical_accuracy(self):
-        acc_obj = metrics.SparseCategoricalAccuracy(name="my_acc")
-
-        # check config
-        self.assertEqual(acc_obj.name, "my_acc")
-        self.assertTrue(acc_obj.stateful)
-        self.assertEqual(len(acc_obj.variables), 2)
-        self.assertEqual(acc_obj.dtype, tf.float32)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-
-        # verify that correct value is returned
-        update_op = acc_obj.update_state(
-            [[2], [1]], [[0.1, 0.1, 0.8], [0.05, 0.95, 0]]
+    def test_unweighted(self):
+        bin_acc_obj = accuracy_metrics.BinaryAccuracy(
+            name="binary_accuracy", dtype="float32"
         )
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
+        y_true = np.array([[1], [1], [0], [0]])
+        y_pred = np.array([[0.98], [1], [0], [0.6]])
+        bin_acc_obj.update_state(y_true, y_pred)
+        result = bin_acc_obj.result()
+        self.assertAllClose(result, 0.75, atol=1e-3)
 
-        # check with sample_weight
-        result_t = acc_obj(
-            [[2], [1]], [[0.1, 0.1, 0.8], [0.05, 0, 0.95]], [[0.5], [0.2]]
+        # Test broadcasting case
+        bin_acc_obj = accuracy_metrics.BinaryAccuracy(
+            name="binary_accuracy", dtype="float32"
         )
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.93, 2)  # 2.5/2.7
+        y_true = np.array([1, 1, 0, 0])
+        y_pred = np.array([[0.98], [1], [0], [0.6]])
+        bin_acc_obj.update_state(y_true, y_pred)
+        result = bin_acc_obj.result()
+        self.assertAllClose(result, 0.75, atol=1e-3)
 
-    def test_sparse_categorical_accuracy_ragged(self):
-        acc_obj = metrics.SparseCategoricalAccuracy(name="my_acc")
-
-        # verify that correct value is returned
-        rt1 = tf.ragged.constant([[2], [1]])
-        rt2 = tf.ragged.constant([[0.1, 0.1, 0.8], [0.05, 0.95, 0]])
-
-        with self.assertRaises(tf.errors.InvalidArgumentError):
-            # sparse_categorical_accuracy is not supported for composite/ragged
-            # tensors.
-            update_op = acc_obj.update_state(rt1, rt2)
-            self.evaluate(update_op)
-
-    def test_sparse_categorical_accuracy_mismatched_dims(self):
-        acc_obj = metrics.SparseCategoricalAccuracy(name="my_acc")
-
-        # check config
-        self.assertEqual(acc_obj.name, "my_acc")
-        self.assertTrue(acc_obj.stateful)
-        self.assertEqual(len(acc_obj.variables), 2)
-        self.assertEqual(acc_obj.dtype, tf.float32)
-        self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
-
-        # verify that correct value is returned
-        update_op = acc_obj.update_state(
-            [2, 1], [[0.1, 0.1, 0.8], [0.05, 0.95, 0]]
+    def test_weighted(self):
+        bin_acc_obj = accuracy_metrics.BinaryAccuracy(
+            name="binary_accuracy", dtype="float32"
         )
-        self.evaluate(update_op)
-        result = self.evaluate(acc_obj.result())
-        self.assertEqual(result, 1)  # 2/2
+        y_true = np.array([[1], [1], [0], [0]])
+        y_pred = np.array([[0.98], [1], [0], [0.6]])
+        sample_weight = np.array([1, 0, 0, 1])
+        bin_acc_obj.update_state(y_true, y_pred, sample_weight=sample_weight)
+        result = bin_acc_obj.result()
+        self.assertAllClose(result, 0.5, atol=1e-3)
 
-        # check with sample_weight
-        result_t = acc_obj(
-            [2, 1], [[0.1, 0.1, 0.8], [0.05, 0, 0.95]], [[0.5], [0.2]]
+    def test_threshold(self):
+        bin_acc_obj_1 = accuracy_metrics.BinaryAccuracy(
+            name="binary_accuracy", dtype="float32", threshold=0.3
         )
-        result = self.evaluate(result_t)
-        self.assertAlmostEqual(result, 0.93, 2)  # 2.5/2.7
+        bin_acc_obj_2 = accuracy_metrics.BinaryAccuracy(
+            name="binary_accuracy", dtype="float32", threshold=0.9
+        )
+        y_true = np.array([[1], [1], [0], [0]])
+        y_pred = np.array([[0.98], [0.5], [0.1], [0.2]])
 
-    def test_sparse_categorical_accuracy_mismatched_dims_dynamic(self):
-        with tf.compat.v1.get_default_graph().as_default(), self.cached_session() as sess:  # noqa: E501
-            acc_obj = metrics.SparseCategoricalAccuracy(name="my_acc")
-            self.evaluate(tf.compat.v1.variables_initializer(acc_obj.variables))
+        bin_acc_obj_1.update_state(y_true, y_pred)
+        bin_acc_obj_2.update_state(y_true, y_pred)
+        result_1 = bin_acc_obj_1.result()
+        result_2 = bin_acc_obj_2.result()
 
-            t = tf.compat.v1.placeholder(tf.float32)
-            p = tf.compat.v1.placeholder(tf.float32)
-            w = tf.compat.v1.placeholder(tf.float32)
+        # Higher threshold must result in lower measured accuracy.
+        self.assertAllClose(result_1, 1.0)
+        self.assertAllClose(result_2, 0.75)
 
-            result_t = acc_obj(t, p, w)
-            result = sess.run(
-                result_t,
-                feed_dict=(
-                    {
-                        t: [2, 1],
-                        p: [[0.1, 0.1, 0.8], [0.05, 0, 0.95]],
-                        w: [[0.5], [0.2]],
-                    }
-                ),
+    def test_invalid_threshold(self):
+        self.assertRaisesRegex(
+            ValueError,
+            re.compile(r"Invalid value for argument `threshold`"),
+            lambda: accuracy_metrics.BinaryAccuracy(threshold=-0.5),
+        )
+        self.assertRaisesRegex(
+            ValueError,
+            re.compile(r"Invalid value for argument `threshold`"),
+            lambda: accuracy_metrics.BinaryAccuracy(threshold=1.5),
+        )
+
+
+class CategoricalAccuracyTest(testing.TestCase):
+    def test_config(self):
+        cat_acc_obj = accuracy_metrics.CategoricalAccuracy(
+            name="categorical_accuracy", dtype="float32"
+        )
+        self.assertEqual(cat_acc_obj.name, "categorical_accuracy")
+        self.assertEqual(len(cat_acc_obj.variables), 2)
+        self.assertEqual(cat_acc_obj._dtype, "float32")
+
+        # Test get_config
+        cat_acc_obj_config = cat_acc_obj.get_config()
+        self.assertEqual(cat_acc_obj_config["name"], "categorical_accuracy")
+        self.assertEqual(cat_acc_obj_config["dtype"], "float32")
+
+        # Check save and restore config
+        cat_acc_obj2 = accuracy_metrics.CategoricalAccuracy.from_config(
+            cat_acc_obj_config
+        )
+        self.assertEqual(cat_acc_obj2.name, "categorical_accuracy")
+        self.assertEqual(len(cat_acc_obj2.variables), 2)
+        self.assertEqual(cat_acc_obj2._dtype, "float32")
+
+    def test_unweighted(self):
+        cat_acc_obj = accuracy_metrics.CategoricalAccuracy(
+            name="categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([[0, 0, 1], [0, 1, 0]])
+        y_pred = np.array([[0.1, 0.9, 0.8], [0.05, 0.95, 0]])
+        cat_acc_obj.update_state(y_true, y_pred)
+        result = cat_acc_obj.result()
+        self.assertAllClose(result, 0.5, atol=1e-3)
+
+    def test_weighted(self):
+        cat_acc_obj = accuracy_metrics.CategoricalAccuracy(
+            name="categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([[0, 0, 1], [0, 1, 0]])
+        y_pred = np.array([[0.1, 0.9, 0.8], [0.05, 0.95, 0]])
+        sample_weight = np.array([0.7, 0.3])
+        cat_acc_obj.update_state(y_true, y_pred, sample_weight=sample_weight)
+        result = cat_acc_obj.result()
+        self.assertAllClose(result, 0.3, atol=1e-3)
+
+
+class SparseCategoricalAccuracyTest(testing.TestCase):
+    def test_config(self):
+        sp_cat_acc_obj = accuracy_metrics.SparseCategoricalAccuracy(
+            name="sparse_categorical_accuracy", dtype="float32"
+        )
+        self.assertEqual(sp_cat_acc_obj.name, "sparse_categorical_accuracy")
+        self.assertEqual(len(sp_cat_acc_obj.variables), 2)
+        self.assertEqual(sp_cat_acc_obj._dtype, "float32")
+
+        # Test get_config
+        sp_cat_acc_obj_config = sp_cat_acc_obj.get_config()
+        self.assertEqual(
+            sp_cat_acc_obj_config["name"], "sparse_categorical_accuracy"
+        )
+        self.assertEqual(sp_cat_acc_obj_config["dtype"], "float32")
+
+        # Check save and restore config
+        sp_cat_acc_obj2 = (
+            accuracy_metrics.SparseCategoricalAccuracy.from_config(
+                sp_cat_acc_obj_config
             )
-            self.assertAlmostEqual(result, 0.71, 2)  # 2.5/2.7
-
-    def test_get_acc(self):
-        acc_fn = metrics.get("acc")
-        self.assertEqual(acc_fn, metrics.accuracy)
-
-
-@test_combinations.generate(test_combinations.combine(mode=["graph", "eager"]))
-class TopKCategoricalAccuracyTest(tf.test.TestCase):
-    def test_config(self):
-        a_obj = metrics.TopKCategoricalAccuracy(name="topkca", dtype=tf.int32)
-        self.assertEqual(a_obj.name, "topkca")
-        self.assertEqual(a_obj._dtype, tf.int32)
-
-        a_obj2 = metrics.TopKCategoricalAccuracy.from_config(a_obj.get_config())
-        self.assertEqual(a_obj2.name, "topkca")
-        self.assertEqual(a_obj2._dtype, tf.int32)
-
-    def test_correctness(self):
-        a_obj = metrics.TopKCategoricalAccuracy()
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        y_true = tf.constant([[0, 0, 1], [0, 1, 0]])
-        y_pred = tf.constant([[0.1, 0.9, 0.8], [0.05, 0.95, 0]])
-
-        result = a_obj(y_true, y_pred)
-        self.assertEqual(1, self.evaluate(result))  # both the samples match
-
-        # With `k` < 5.
-        a_obj = metrics.TopKCategoricalAccuracy(k=1)
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        result = a_obj(y_true, y_pred)
-        self.assertEqual(0.5, self.evaluate(result))  # only sample #2 matches
-
-        # With `k` > 5.
-        y_true = tf.constant([[0, 0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0, 0]])
-        y_pred = tf.constant(
-            [[0.5, 0.9, 0.1, 0.7, 0.6, 0.5, 0.4], [0.05, 0.95, 0, 0, 0, 0, 0]]
         )
-        a_obj = metrics.TopKCategoricalAccuracy(k=6)
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        result = a_obj(y_true, y_pred)
-        self.assertEqual(0.5, self.evaluate(result))  # only 1 sample matches.
+        self.assertEqual(sp_cat_acc_obj2.name, "sparse_categorical_accuracy")
+        self.assertEqual(len(sp_cat_acc_obj2.variables), 2)
+        self.assertEqual(sp_cat_acc_obj2._dtype, "float32")
+
+    def test_unweighted(self):
+        sp_cat_acc_obj = accuracy_metrics.SparseCategoricalAccuracy(
+            name="sparse_categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([[2], [1]])
+        y_pred = np.array([[0.1, 0.6, 0.3], [0.05, 0.95, 0]])
+        sp_cat_acc_obj.update_state(y_true, y_pred)
+        result = sp_cat_acc_obj.result()
+        self.assertAllClose(result, 0.5, atol=1e-3)
 
     def test_weighted(self):
-        a_obj = metrics.TopKCategoricalAccuracy(k=2)
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        y_true = tf.constant([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
-        y_pred = tf.constant([[0, 0.9, 0.1], [0, 0.9, 0.1], [0, 0.9, 0.1]])
-        sample_weight = tf.constant((1.0, 0.0, 1.0))
-        result = a_obj(y_true, y_pred, sample_weight=sample_weight)
-        self.assertAllClose(1.0, self.evaluate(result), atol=1e-5)
+        sp_cat_acc_obj = accuracy_metrics.SparseCategoricalAccuracy(
+            name="sparse_categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([[2], [1]])
+        y_pred = np.array([[0.1, 0.6, 0.3], [0.05, 0.95, 0]])
+        sample_weight = np.array([0.7, 0.3])
+        sp_cat_acc_obj.update_state(y_true, y_pred, sample_weight=sample_weight)
+        result = sp_cat_acc_obj.result()
+        self.assertAllClose(result, 0.3, atol=1e-3)
 
 
-@test_combinations.generate(test_combinations.combine(mode=["graph", "eager"]))
-class SparseTopKCategoricalAccuracyTest(tf.test.TestCase):
+class TopKCategoricalAccuracyTest(testing.TestCase):
     def test_config(self):
-        a_obj = metrics.SparseTopKCategoricalAccuracy(
-            name="stopkca", dtype=tf.int32
+        top_k_cat_acc_obj = accuracy_metrics.TopKCategoricalAccuracy(
+            k=1, name="top_k_categorical_accuracy", dtype="float32"
         )
-        self.assertEqual(a_obj.name, "stopkca")
-        self.assertEqual(a_obj._dtype, tf.int32)
+        self.assertEqual(top_k_cat_acc_obj.name, "top_k_categorical_accuracy")
+        self.assertEqual(len(top_k_cat_acc_obj.variables), 2)
+        self.assertEqual(top_k_cat_acc_obj._dtype, "float32")
 
-        a_obj2 = metrics.SparseTopKCategoricalAccuracy.from_config(
-            a_obj.get_config()
+        # Test get_config
+        top_k_cat_acc_obj_config = top_k_cat_acc_obj.get_config()
+        self.assertEqual(
+            top_k_cat_acc_obj_config["name"], "top_k_categorical_accuracy"
         )
-        self.assertEqual(a_obj2.name, "stopkca")
-        self.assertEqual(a_obj2._dtype, tf.int32)
+        self.assertEqual(top_k_cat_acc_obj_config["dtype"], "float32")
+        self.assertEqual(top_k_cat_acc_obj_config["k"], 1)
 
-    def test_correctness(self):
-        a_obj = metrics.SparseTopKCategoricalAccuracy()
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        y_true = tf.constant([2, 1])
-        y_pred = tf.constant([[0.1, 0.9, 0.8], [0.05, 0.95, 0]])
-
-        result = a_obj(y_true, y_pred)
-        self.assertEqual(1, self.evaluate(result))  # both the samples match
-
-        # With `k` < 5.
-        a_obj = metrics.SparseTopKCategoricalAccuracy(k=1)
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        result = a_obj(y_true, y_pred)
-        self.assertEqual(0.5, self.evaluate(result))  # only sample #2 matches
-
-        # With `k` > 5.
-        y_pred = tf.constant(
-            [[0.5, 0.9, 0.1, 0.7, 0.6, 0.5, 0.4], [0.05, 0.95, 0, 0, 0, 0, 0]]
+        # Check save and restore config
+        top_k_cat_acc_obj2 = (
+            accuracy_metrics.TopKCategoricalAccuracy.from_config(
+                top_k_cat_acc_obj_config
+            )
         )
-        a_obj = metrics.SparseTopKCategoricalAccuracy(k=6)
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        result = a_obj(y_true, y_pred)
-        self.assertEqual(0.5, self.evaluate(result))  # only 1 sample matches.
+        self.assertEqual(top_k_cat_acc_obj2.name, "top_k_categorical_accuracy")
+        self.assertEqual(len(top_k_cat_acc_obj2.variables), 2)
+        self.assertEqual(top_k_cat_acc_obj2._dtype, "float32")
+        self.assertEqual(top_k_cat_acc_obj2.k, 1)
+
+    def test_unweighted(self):
+        top_k_cat_acc_obj = accuracy_metrics.TopKCategoricalAccuracy(
+            k=1, name="top_k_categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([[0, 0, 1], [0, 1, 0]])
+        y_pred = np.array([[0.1, 0.9, 0.8], [0.05, 0.95, 0]], dtype="float32")
+        top_k_cat_acc_obj.update_state(y_true, y_pred)
+        result = top_k_cat_acc_obj.result()
+        self.assertAllClose(result, 0.5, atol=1e-3)
 
     def test_weighted(self):
-        a_obj = metrics.SparseTopKCategoricalAccuracy(k=2)
-        self.evaluate(tf.compat.v1.variables_initializer(a_obj.variables))
-        y_true = tf.constant([1, 0, 2])
-        y_pred = tf.constant([[0, 0.9, 0.1], [0, 0.9, 0.1], [0, 0.9, 0.1]])
-        sample_weight = tf.constant((1.0, 0.0, 1.0))
-        result = a_obj(y_true, y_pred, sample_weight=sample_weight)
-        self.assertAllClose(1.0, self.evaluate(result), atol=1e-5)
-
-    def test_sparse_top_k_categorical_accuracy_mismatched_dims_dynamic(self):
-
-        if not tf.compat.v1.executing_eagerly():
-            # Test will fail in v1 graph mode since the metric is not a normal
-            # layer.  It will aggregate the output by batch dim, which failed on
-            # v1 code.
-            self.skipTest("v2 eager mode only")
-
-        class AccLayer(layers.Layer):
-            def build(self, _):
-                self.acc = metrics.SparseTopKCategoricalAccuracy(k=1)
-
-            def call(self, y_true, y_pred):
-                return self.acc(y_true, y_pred)
-
-        label = layers.Input(shape=[1])
-        predict = layers.Input(shape=[3])
-        metric_result = AccLayer()(label, predict)
-        model = Model([label, predict], metric_result)
-
-        result = model.predict(
-            [
-                tf.constant([[2], [1]]),
-                tf.constant([[0.1, 0.1, 0.8], [0.05, 0, 0.95]]),
-            ],
-            steps=1,
+        top_k_cat_acc_obj = accuracy_metrics.TopKCategoricalAccuracy(
+            k=1, name="top_k_categorical_accuracy", dtype="float32"
         )
-        self.assertAllClose(result, 0.5)
+        y_true = np.array([[0, 0, 1], [0, 1, 0]])
+        y_pred = np.array([[0.1, 0.9, 0.8], [0.05, 0.95, 0]], dtype="float32")
+        sample_weight = np.array([0.7, 0.3])
+        top_k_cat_acc_obj.update_state(
+            y_true, y_pred, sample_weight=sample_weight
+        )
+        result = top_k_cat_acc_obj.result()
+        self.assertAllClose(result, 0.3, atol=1e-3)
 
 
-if __name__ == "__main__":
-    tf.test.main()
+class SparseTopKCategoricalAccuracyTest(testing.TestCase):
+    def test_config(self):
+        sp_top_k_cat_acc_obj = accuracy_metrics.SparseTopKCategoricalAccuracy(
+            k=1, name="sparse_top_k_categorical_accuracy", dtype="float32"
+        )
+        self.assertEqual(
+            sp_top_k_cat_acc_obj.name, "sparse_top_k_categorical_accuracy"
+        )
+        self.assertEqual(len(sp_top_k_cat_acc_obj.variables), 2)
+        self.assertEqual(sp_top_k_cat_acc_obj._dtype, "float32")
+
+        # Test get_config
+        sp_top_k_cat_acc_obj_config = sp_top_k_cat_acc_obj.get_config()
+        self.assertEqual(
+            sp_top_k_cat_acc_obj_config["name"],
+            "sparse_top_k_categorical_accuracy",
+        )
+        self.assertEqual(sp_top_k_cat_acc_obj_config["dtype"], "float32")
+        self.assertEqual(sp_top_k_cat_acc_obj_config["k"], 1)
+
+        # Check save and restore config
+        sp_top_k_cat_acc_obj2 = (
+            accuracy_metrics.SparseTopKCategoricalAccuracy.from_config(
+                sp_top_k_cat_acc_obj_config
+            )
+        )
+        self.assertEqual(
+            sp_top_k_cat_acc_obj2.name, "sparse_top_k_categorical_accuracy"
+        )
+        self.assertEqual(len(sp_top_k_cat_acc_obj2.variables), 2)
+        self.assertEqual(sp_top_k_cat_acc_obj2._dtype, "float32")
+        self.assertEqual(sp_top_k_cat_acc_obj2.k, 1)
+
+    def test_unweighted(self):
+        sp_top_k_cat_acc_obj = accuracy_metrics.SparseTopKCategoricalAccuracy(
+            k=1, name="sparse_top_k_categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([2, 1])
+        y_pred = np.array([[0.1, 0.9, 0.8], [0.05, 0.95, 0]], dtype="float32")
+        sp_top_k_cat_acc_obj.update_state(y_true, y_pred)
+        result = sp_top_k_cat_acc_obj.result()
+        self.assertAllClose(result, 0.5, atol=1e-3)
+
+    def test_weighted(self):
+        sp_top_k_cat_acc_obj = accuracy_metrics.SparseTopKCategoricalAccuracy(
+            k=1, name="sparse_top_k_categorical_accuracy", dtype="float32"
+        )
+        y_true = np.array([2, 1])
+        y_pred = np.array([[0.1, 0.9, 0.8], [0.05, 0.95, 0]], dtype="float32")
+        sample_weight = np.array([0.7, 0.3])
+        sp_top_k_cat_acc_obj.update_state(
+            y_true, y_pred, sample_weight=sample_weight
+        )
+        result = sp_top_k_cat_acc_obj.result()
+        self.assertAllClose(result, 0.3, atol=1e-3)
