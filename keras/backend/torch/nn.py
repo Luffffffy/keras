@@ -67,7 +67,7 @@ def hard_sigmoid(x):
     return tnn.hardsigmoid(x)
 
 
-def hard_swish(x):
+def hard_silu(x):
     x = convert_to_tensor(x)
     return tnn.hardswish(x)
 
@@ -92,24 +92,36 @@ def gelu(x, approximate=True):
 
 def softmax(x, axis=-1):
     x = convert_to_tensor(x)
+    dtype = standardize_dtype(x.dtype)
+    # TODO: tnn.softmax doesn't support float16 using cpu
+    if get_device() == "cpu" and standardize_dtype(x.dtype) == "float16":
+        x = cast(x, "float32")
     if axis is None:
         # Unlike numpy, PyTorch will handle axis=None as axis=-1.
         # We need this workaround for the reduction on every dim.
         output = torch.reshape(x, [-1])
         output = tnn.softmax(output, dim=-1)
-        return torch.reshape(output, x.shape)
-    return tnn.softmax(x, dim=axis)
+        output = torch.reshape(output, x.shape)
+    else:
+        output = tnn.softmax(x, dim=axis)
+    return cast(output, dtype)
 
 
 def log_softmax(x, axis=-1):
     x = convert_to_tensor(x)
+    dtype = standardize_dtype(x.dtype)
+    # TODO: tnn.log_softmax doesn't support float16 using cpu
+    if get_device() == "cpu" and standardize_dtype(x.dtype) == "float16":
+        x = cast(x, "float32")
     if axis is None:
         # Unlike numpy, PyTorch will handle axis=None as axis=-1.
         # We need this workaround for the reduction on every dim.
         output = torch.reshape(x, [-1])
         output = tnn.log_softmax(output, dim=-1)
-        return torch.reshape(output, x.shape)
-    return tnn.log_softmax(x, dim=axis)
+        output = torch.reshape(output, x.shape)
+    else:
+        output = tnn.log_softmax(x, dim=axis)
+    return cast(output, dtype)
 
 
 def _compute_padding_length(
@@ -564,6 +576,7 @@ def one_hot(x, num_classes, axis=-1, dtype="float32"):
 
 
 def multi_hot(x, num_classes, axis=-1, dtype="float32"):
+    x = convert_to_tensor(x)
     reduction_axis = 1 if len(x.shape) > 1 else 0
     outputs = torch.amax(
         one_hot(cast(x, "int32"), num_classes, axis=axis, dtype=dtype),
@@ -732,3 +745,28 @@ def batch_normalization(
     order.pop(1)
     order.insert(axis, 1)
     return x.permute(order)
+
+
+def ctc_loss(
+    target,
+    output,
+    target_length,
+    output_length,
+    mask_index=0,
+):
+    target = convert_to_tensor(target)
+    output = convert_to_tensor(output)
+    target_length = convert_to_tensor(target_length)
+    output_length = convert_to_tensor(output_length)
+
+    output = torch.transpose(output, 1, 0)
+    logits = tnn.log_softmax(output, dim=-1)
+
+    return tnn.ctc_loss(
+        logits,
+        target,
+        output_length,
+        target_length,
+        blank=mask_index,
+        reduction="none",
+    )

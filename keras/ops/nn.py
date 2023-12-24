@@ -332,17 +332,24 @@ def hard_sigmoid(x):
     return backend.nn.hard_sigmoid(x)
 
 
-class HardSwish(Operation):
+class HardSilu(Operation):
     def call(self, x):
-        return backend.nn.hard_swish(x)
+        return backend.nn.hard_silu(x)
 
     def compute_output_spec(self, x):
         return KerasTensor(x.shape, dtype=x.dtype)
 
 
-@keras_export(["keras.ops.hard_swish", "keras.ops.nn.hard_swish"])
-def hard_swish(x):
-    """Hard swish activation function.
+@keras_export(
+    [
+        "keras.ops.hard_silu",
+        "keras.ops.nn.hard_silu",
+        "keras.ops.hard_swish",
+        "keras.ops.nn.hard_swish",
+    ]
+)
+def hard_silu(x):
+    """Hard SiLU activation function, also known as Hard Swish.
 
     It is defined as:
 
@@ -350,7 +357,7 @@ def hard_swish(x):
     - `x` if `x > 3`
     - `x * (x + 3) / 6` if `-3 <= x <= 3`
 
-    It's a faster, piecewise linear approximation of the swish activation.
+    It's a faster, piecewise linear approximation of the silu activation.
 
     Args:
         x: Input tensor.
@@ -361,13 +368,13 @@ def hard_swish(x):
     Example:
 
     >>> x = keras.ops.convert_to_tensor([-3.0, -1.0, 0.0, 1.0, 3.0])
-    >>> keras.ops.hard_swish(x)
+    >>> keras.ops.hard_silu(x)
     array([-0.0, -0.3333333, 0.0, 0.6666667, 3.0], shape=(5,), dtype=float32)
 
     """
     if any_symbolic_tensors((x,)):
-        return HardSwish().symbolic_call(x)
-    return backend.nn.hard_swish(x)
+        return HardSilu().symbolic_call(x)
+    return backend.nn.hard_silu(x)
 
 
 class Elu(Operation):
@@ -1537,16 +1544,22 @@ def sparse_categorical_crossentropy(target, output, from_logits=False, axis=-1):
 
 
 class MultiHot(Operation):
-    def __init__(self, num_tokens=None, axis=-1, dtype=None, name=None):
-        super().__init__(name)
-        self.num_tokens = num_tokens
+    def __init__(
+        self, num_classes=None, axis=-1, dtype=None, name=None, **kwargs
+    ):
+        if num_classes is None and "num_tokens" in kwargs:
+            num_classes = kwargs.pop("num_tokens")
+        if num_classes is None:
+            raise ValueError("Argument `num_classes` must be specified.")
+        super().__init__(name, **kwargs)
+        self.num_classes = num_classes
         self.axis = axis
         self.dtype = dtype or backend.floatx()
 
     def call(self, inputs):
         return backend.nn.multi_hot(
             inputs,
-            num_classes=self.num_tokens,
+            num_classes=self.num_classes,
             axis=self.axis,
             dtype=self.dtype,
         )
@@ -1554,9 +1567,9 @@ class MultiHot(Operation):
     def compute_output_spec(self, inputs):
         x_shape = list(getattr(inputs, "shape", []))
         if self.axis == -1:
-            x_shape.append(self.num_tokens)
+            x_shape.append(self.num_classes)
         elif self.axis >= 0 and self.axis < len(x_shape):
-            x_shape.insert(self.axis, self.num_tokens)
+            x_shape.insert(self.axis, self.num_classes)
         else:
             raise ValueError(
                 f"axis must be -1 or between [0, {len(inputs.shape)}), but "
@@ -1577,7 +1590,7 @@ class MultiHot(Operation):
         "keras.ops.nn.multi_hot",
     ]
 )
-def multi_hot(inputs, num_tokens, axis=-1, dtype=None):
+def multi_hot(inputs, num_classes=None, axis=-1, dtype=None, **kwargs):
     """Encodes integer labels as multi-hot vectors.
 
     This function encodes integer labels as multi-hot vectors, where each label
@@ -1585,7 +1598,7 @@ def multi_hot(inputs, num_tokens, axis=-1, dtype=None):
 
     Args:
         inputs: Tensor of integer labels to be converted to multi-hot vectors.
-        num_tokens: Integer, the total number of unique tokens or classes.
+        num_classes: Integer, the total number of unique classes.
         axis: (optional) Axis along which the multi-hot encoding should be
             added. Defaults to `-1`, which corresponds to the last dimension.
         dtype: (optional) The data type of the resulting tensor. Default
@@ -1597,14 +1610,19 @@ def multi_hot(inputs, num_tokens, axis=-1, dtype=None):
     Example:
 
     >>> data = keras.ops.convert_to_tensor([0, 4])
-    >>> keras.ops.multi_hot(data, num_tokens=5)
+    >>> keras.ops.multi_hot(data, num_classes=5)
     array([1.0, 0.0, 0.0, 0.0, 1.0], dtype=float32)
 
     """
-    if any_symbolic_tensors((inputs,)):
-        return MultiHot(num_tokens, axis, dtype).symbolic_call(inputs)
+    if num_classes is None and "num_tokens" in kwargs:
+        num_classes = kwargs.pop("num_tokens")
+    if num_classes is None:
+        raise ValueError("Argument `num_classes` must be specified.")
 
-    return backend.nn.multi_hot(inputs, num_tokens, axis, dtype)
+    if any_symbolic_tensors((inputs,)):
+        return MultiHot(num_classes, axis, dtype).symbolic_call(inputs)
+
+    return backend.nn.multi_hot(inputs, num_classes, axis, dtype)
 
 
 class Moments(Operation):
@@ -1758,4 +1776,67 @@ def batch_normalization(
 
     return backend.nn.batch_normalization(
         x, mean, variance, axis, offset, scale, epsilon
+    )
+
+
+class CtcLoss(Operation):
+    def __init__(self, mask_index):
+        super().__init__()
+        self.mask_index = mask_index
+
+    def call(self, target, output, target_length, output_length):
+        return backend.nn.ctc_loss(
+            target, output, target_length, output_length, self.mask_index
+        )
+
+    def _check_shape_first_dim(self, name1, shape1, name2, shape2):
+        if shape1[0] != shape2[0]:
+            raise ValueError(
+                f"Arguments `{name1}` and `{name2}` must have the same "
+                "first dimension. "
+                f"Received shapes: `{shape1}` and `{shape2}`."
+            )
+
+    def compute_output_spec(self, target, output, target_length, output_length):
+        self._check_shape_first_dim(
+            "target", target.shape, "output", output.shape
+        )
+        self._check_shape_first_dim(
+            "target_length", target_length.shape, "target", target.shape
+        )
+        self._check_shape_first_dim(
+            "output_length", output_length.shape, "output", output.shape
+        )
+
+        return KerasTensor((target.shape[0],), dtype=target.dtype)
+
+
+@keras_export(
+    [
+        "keras.ops.ctc_loss",
+        "keras.ops.nn.ctc_loss",
+    ]
+)
+def ctc_loss(target, output, target_length, output_length, mask_index=0):
+    """CTC (Connectionist Temporal Classification) loss.
+
+    Args:
+        target: A tensor of shape `(batch_size, max_length)` containing
+            the true labels in integer format.
+        output: A tensor of shape `(batch_size, max_length, num_classes)`
+            containing logits (the output of your model).
+        target_length: A tensor of shape `(batch_size,)` containing the
+            true label lengths.
+        output_length: A tensor of shape `(batch_size,)` containing the
+            output lengths.
+        mask_index: The index of the mask character in the vocabulary.
+            Defaults to `0`.
+    """
+
+    if any_symbolic_tensors((target, output, target_length, output_length)):
+        return CtcLoss(mask_index).symbolic_call(
+            target, output, target_length, output_length
+        )
+    return backend.nn.ctc_loss(
+        target, output, target_length, output_length, mask_index
     )

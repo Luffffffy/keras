@@ -6,6 +6,7 @@ import pytest
 from absl.testing import parameterized
 from tensorflow.python.ops.numpy_ops import np_config
 
+import keras
 from keras import backend
 from keras import testing
 from keras.backend.common import standardize_dtype
@@ -3840,11 +3841,53 @@ class NumpyOneInputOpsCorrectnessTest(testing.TestCase, parameterized.TestCase):
         self.assertAllClose(knp.tril(x, -1), np.tril(x, -1))
         self.assertAllClose(knp.Tril(-1)(x), np.tril(x, -1))
 
+    def test_tril_in_layer(self):
+        # https://github.com/keras-team/keras/issues/18890
+        x = keras.Input((None, 3))
+        y1 = keras.layers.Lambda(
+            lambda x: keras.ops.tril(
+                keras.ops.ones((keras.ops.shape(x)[1], keras.ops.shape(x)[1]))
+            )
+        )(x)
+        y2 = keras.layers.Lambda(
+            lambda x: keras.ops.tril(
+                keras.ops.ones((keras.ops.shape(x)[1], keras.ops.shape(x)[1])),
+                k=-1,
+            )
+        )(x)
+        model = keras.Model(x, [y1, y2])
+
+        result = model(np.ones((1, 2, 3), "float32"))
+        self.assertAllClose(
+            result, [np.tril(np.ones((2, 2))), np.tril(np.ones((2, 2)), k=-1)]
+        )
+
     def test_triu(self):
         x = np.arange(24).reshape([1, 2, 3, 4])
         self.assertAllClose(knp.triu(x), np.triu(x))
         self.assertAllClose(knp.triu(x, -1), np.triu(x, -1))
         self.assertAllClose(knp.Triu(-1)(x), np.triu(x, -1))
+
+    def test_triu_in_layer(self):
+        # https://github.com/keras-team/keras/issues/18890
+        x = keras.Input((None, 3))
+        y1 = keras.layers.Lambda(
+            lambda x: keras.ops.triu(
+                keras.ops.ones((keras.ops.shape(x)[1], keras.ops.shape(x)[1]))
+            )
+        )(x)
+        y2 = keras.layers.Lambda(
+            lambda x: keras.ops.triu(
+                keras.ops.ones((keras.ops.shape(x)[1], keras.ops.shape(x)[1])),
+                k=-1,
+            )
+        )(x)
+        model = keras.Model(x, [y1, y2])
+
+        result = model(np.ones((1, 2, 3), "float32"))
+        self.assertAllClose(
+            result, [np.triu(np.ones((2, 2))), np.triu(np.ones((2, 2)), k=-1)]
+        )
 
     def test_vstack(self):
         x = np.array([[1, 2, 3], [3, 2, 1]])
@@ -4039,6 +4082,7 @@ class SparseTest(testing.TestCase, parameterized.TestCase):
         "cos",
         "cosh",
         "exp",
+        "isfinite",
         "log",
         "log10",
         "log2",
@@ -4095,10 +4139,8 @@ class SparseTest(testing.TestCase, parameterized.TestCase):
         ("maximum", union_sparseness),
         ("minimum", union_sparseness),
         ("multiply", intersection_sparseness),
-        ("mod", division_sparseness),
         ("divide", division_sparseness),
         ("true_divide", division_sparseness),
-        ("floor_divide", division_sparseness),
     ]
     BINARY_OPS_TESTS = [
         {
@@ -4227,9 +4269,6 @@ class SparseTest(testing.TestCase, parameterized.TestCase):
     def test_binary_correctness_sparse_tensor(
         self, x, y, op_function, op_class, np_op, op_sparseness, dtype
     ):
-        if dtype == "int32" and op_function.__name__ in ("floor_divide", "mod"):
-            self.skipTest(f"{op_function.__name__} does not support integers")
-
         x = backend.cast(x, dtype)
         y = backend.cast(y, dtype)
         expected_result = np_op(
@@ -4251,9 +4290,6 @@ class SparseTest(testing.TestCase, parameterized.TestCase):
     def test_binary_correctness_indexed_slices(
         self, x, y, op_function, op_class, np_op, op_sparseness, dtype
     ):
-        if dtype == "int32" and op_function.__name__ in ("floor_divide", "mod"):
-            self.skipTest(f"{op_function.__name__} does not support integers")
-
         x = backend.cast(x, dtype)
         y = backend.cast(y, dtype)
         expected_result = np_op(
